@@ -279,9 +279,31 @@ falling back to the global default otherwise.
 The production rate is only part of the picture. Before a measured
 nuclide concentration can be converted to a reliable exposure age, several
 site-specific corrections must be applied or explicitly justified.
-Items marked **[implemented]** are handled by `stoneage` today; items
-marked **[placeholder]** are not yet computed automatically and must be
+Items marked **implemented** are handled by `stoneage` today; items
+marked **placeholder** are not yet computed automatically and must be
 addressed by the user before proceeding to dating.
+
+| # | Correction | Status | Typical magnitude | Nuclides affected |
+|---|-----------|--------|-------------------|-------------------|
+| 1 | Topographic shielding | placeholder | up to 10%+ near cliffs | all |
+| 2 | Sample thickness | **implemented** | 1–5% for 2–5 cm | all |
+| 3 | Snow shielding | placeholder | 5–20% at alpine/high-lat. sites | all |
+| 4 | Erosion / surface lowering | **implemented** (user-supplied) | increases apparent age | all |
+| 5 | Post-exposure burial | placeholder | underestimates age | all |
+| 6 | Inheritance / pre-exposure | placeholder | inflates apparent age | all |
+| 7 | Sample depth | placeholder | large if > 1 m depth | all |
+| 8 | Isostatic rebound / paleoelevation | placeholder | < 2% most Holocene; larger in rapid-rebound regions | all |
+| 9 | Nucleogenic ³He and ²¹Ne | placeholder | < 5% mafic rocks; up to > 50% high-U/Th | ³He, ²¹Ne |
+| 10 | ³He diffusive loss | placeholder | < 1% Holocene; > 10% for > 1 Ma | ³He only |
+| 11 | Surface dip | placeholder | > 5% for dip > 20–30° | all |
+| 12 | Rock exfoliation / episodic spalling | placeholder | underestimates age; hard to quantify | all |
+| 13 | Vegetation and soil cover | placeholder | 6–10% per 10 cm of soil | all |
+| 14 | Rounded / non-planar boulder surfaces | placeholder | < 2% for boulders > 1 m | all |
+| 15 | Boulder stability and tilting | placeholder | can reset apparent age | all |
+| 16 | Submergence / water cover | placeholder | depends on depth and duration | all |
+| 17 | Cl-36 chemical composition | placeholder | large; nuclide-specific | ³⁶Cl only |
+| 18 | Relative sea level change | placeholder | significant near coastlines in rebound regions | all |
+| 19 | Ice cover history | placeholder | halts spallogenic production | all |
 
 ### 1. Topographic shielding **[placeholder]**
 
