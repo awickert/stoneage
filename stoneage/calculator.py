@@ -186,15 +186,17 @@ def get_ages(in_data: dict, control: dict = None, consts: Constants = None) -> d
     # -----------------------------------------------------------------------
     elif cal == 1:
         c = in_data["c"]
-        # Adjust calibration ages from yr-before-1950 to yr-before-collection
+        # Adjust calibration ages from yr-before-1950 to yr-before-collection.
+        # c["truet"] is sample-indexed (position i = sample i), so use s["yr"][i]
+        # directly — not c["index"][i], which maps calibration-line order to sample
+        # order and would give the wrong year if lines appear out of sample order.
         for i in range(len(c["truet"])):
-            si = c["index"][i]
             if c["truet"][i] > 0:
-                c["truet"][i] += s["yr"][si] - 1950
+                c["truet"][i] += s["yr"][i] - 1950
             if c["mint"][i] > 0:
-                c["mint"][i] += s["yr"][si] - 1950
+                c["mint"][i] += s["yr"][i] - 1950
             if c["maxt"][i] < np.inf:
-                c["maxt"][i] += s["yr"][si] - 1950
+                c["maxt"][i] += s["yr"][i] - 1950
 
         calc_P_St   = np.zeros(num_n)
         calc_minP   = np.zeros(num_n)

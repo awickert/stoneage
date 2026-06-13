@@ -10,19 +10,7 @@ from pathlib import Path
 _DATA_DIR = Path(__file__).parent / "data"
 
 
-def angdistr(lat1, long1, lat2, long2):
-    """
-    Angular distance between points on a sphere (all args in radians).
-
-    Port of angdistr.m (Balco, 2015).
-    """
-    return np.arccos(
-        cos(lat1) * np.cos(lat2) * (np.cos(long1) * np.cos(long2) + np.sin(long1) * np.sin(long2))
-        + np.sin(lat1) * np.sin(lat2)
-    )
-
-
-# Avoid shadowing numpy cos
+# Avoid shadowing numpy in the module-level helper below
 _cos = np.cos
 _sin = np.sin
 _arccos = np.arccos

@@ -38,7 +38,7 @@ def _sumstats(t, dt_int, dt_ext):
 
     result = {
         "mean": float(np.mean(t)),
-        "sd":   float(np.std(t, ddof=1)) if len(t) > 1 else 0.0,
+        "sd":   float(np.std(t, ddof=1)) if len(t) > 1 else float(dt_int[0]),
     }
     if len(t) >= 2:
         result["ewmean"], result["ewse"] = _ewmean(t, dt_int)
