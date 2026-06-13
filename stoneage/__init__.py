@@ -6,6 +6,7 @@ Original author: Greg Balco, Berkeley Geochronology Center (balcs@bgc.org)
 """
 
 from .constants import make_consts
+from .workflow import ProductionRateWorkflow
 from .atmosphere import ERA40atm, antatm
 from .scaling import stone2000, get_LmSF, get_LSDnSF
 from .corrections import thickness, Lsp
