@@ -97,17 +97,35 @@ class CalibrationSite:
 
 
 @dataclass
-class ProductionRateResult:
+class CalibrationResult:
+    """Scheme-level reference production rate — one per scaling scheme."""
     scheme: str
-    P_ref_SLHL: float   # reference production rate (at/g/yr or dimensionless for LSDn)
+    P_ref_SLHL: float   # at/g/yr for St/Lm; dimensionless for LSDn
     dP_ref: float
-    SF: float           # site scaling factor
-    P_local: float      # production rate at target site
-    dP_local: float
     source: str         # "global default" or "ICE-D local (N sites, X km)"
     n_sites: int = 0
     max_dist_km: float = 0.0
     chi2_p: Optional[float] = None
+
+
+@dataclass
+class PointResult:
+    """Per-sample local production rate derived from a CalibrationResult."""
+    target_name: str
+    lat: float
+    lon: float
+    elv: float
+    scheme: str
+    SF: float           # Stone2000 (or LSDn) scaling factor at this point
+    tc: float           # thickness correction
+    P_mu: float         # muon production rate
+    P_local: float      # total local production rate
+    dP_local: float     # uncertainty from P_ref only
+    source: str         # same as CalibrationResult.source
+
+
+# Keep a combined alias for backward compatibility
+ProductionRateResult = PointResult
 
 
 # ---------------------------------------------------------------------------
@@ -195,42 +213,51 @@ class ProductionRateWorkflow:
     """
     Transparent production rate estimation from ICE-D calibration data.
 
-    Parameters
-    ----------
-    lat, lon, elv : float
-        Target location (decimal degrees; west negative) and elevation (m).
-    thick : float
-        Sample thickness (cm). Default 2 cm.
-    rho : float
-        Sample density (g/cm³). Default 2.65.
-    shield : float
-        Topographic shielding factor (0–1). Default 1.0.
-    name : str
-        Optional label for the target site.
+    For a single point:
+        wf = ProductionRateWorkflow(lat=46.2, lon=-91.8, elv=183)
+
+    For multiple sample points from a CSV (columns: name, lat, lon, elevation;
+    optional: thickness, density, shielding, erosion, year):
+        wf = ProductionRateWorkflow.from_csv("samples.csv")
+        # by default computes a production rate per point;
+        # pass use_centroid=True for one combined rate at the group centroid.
     """
 
     def __init__(self, lat: float, lon: float, elv: float,
                  thick: float = 2.0, rho: float = 2.65,
                  shield: float = 1.0, erosion: float = 0.0,
                  yr: int = 2010, name: str = "TARGET"):
-        self.target = TargetSite(name=name, lat=lat, lon=lon, elv=elv,
-                                 thick=thick, rho=rho, shield=shield,
-                                 erosion=erosion, yr=yr)
+        self.targets: List[TargetSite] = [
+            TargetSite(name=name, lat=lat, lon=lon, elv=elv,
+                       thick=thick, rho=rho, shield=shield,
+                       erosion=erosion, yr=yr)
+        ]
         self._cal_samples: List[CalibrationSite] = []
         self._selected: List[CalibrationSite] = []
-        self._results: List[ProductionRateResult] = []
+        self._cal_results: List[CalibrationResult] = []   # one per scheme
+        self._point_results: List[PointResult] = []       # one per (scheme × target)
         self._consts: Optional[Constants] = None
 
+    # convenience accessor for single-point workflows
+    @property
+    def target(self) -> TargetSite:
+        return self.targets[0]
+
     @classmethod
-    def from_csv(cls, path: str, **kwargs) -> "ProductionRateWorkflow":
+    def from_csv(cls, path: str, use_centroid: bool = False,
+                 **kwargs) -> "ProductionRateWorkflow":
         """
         Create from a CSV file.
 
         The CSV must have columns: name, lat, lon, elevation
         Optional columns: thickness, density, shielding, erosion, year
 
-        If multiple rows, the centroid is used as the target location and
-        individual rows are stored for later dating.
+        Parameters
+        ----------
+        use_centroid : bool
+            If True, compute one production rate at the geographic centroid
+            of all points.  Default False: compute per point (recommended
+            when samples span different elevations or latitudes).
         """
         import csv
         rows = []
@@ -241,35 +268,76 @@ class ProductionRateWorkflow:
         if not rows:
             raise ValueError(f"No data rows in {path}")
 
-        # Use centroid of all points as the target for calibration
-        lats = [float(r["lat"])       for r in rows]
-        lons = [float(r["lon"])       for r in rows]
-        elvs = [float(r["elevation"]) for r in rows]
-        lat_c = float(np.mean(lats))
-        lon_c = float(np.mean(lons))
-        elv_c = float(np.mean(elvs))
+        def _site(r):
+            return TargetSite(
+                name      = r["name"],
+                lat       = float(r["lat"]),
+                lon       = float(r["lon"]),
+                elv       = float(r["elevation"]),
+                thick     = float(r.get("thickness", 2.0)),
+                rho       = float(r.get("density",   2.65)),
+                shield    = float(r.get("shielding", 1.0)),
+                erosion   = float(r.get("erosion",   0.0)),
+                yr        = int(r.get("year", 2010)),
+            )
 
-        wf = cls(lat=lat_c, lon=lon_c, elv=elv_c,
-                 name=Path(path).stem, **kwargs)
-        wf._csv_rows = rows
-        wf._csv_path = path
+        if use_centroid:
+            lats = [float(r["lat"])       for r in rows]
+            lons = [float(r["lon"])       for r in rows]
+            elvs = [float(r["elevation"]) for r in rows]
+            centroid = TargetSite(
+                name=Path(path).stem + "_centroid",
+                lat=float(np.mean(lats)),
+                lon=float(np.mean(lons)),
+                elv=float(np.mean(elvs)),
+                **{k: v for k, v in kwargs.items()
+                   if k in ("thick","rho","shield","erosion","yr")},
+            )
+            wf = cls.__new__(cls)
+            wf.targets = [centroid]
+        else:
+            wf = cls.__new__(cls)
+            wf.targets = [_site(r) for r in rows]
+
+        wf._cal_samples   = []
+        wf._selected      = []
+        wf._cal_results   = []
+        wf._point_results = []
+        wf._consts        = None
+        wf._csv_path      = path
         return wf
 
     # ── Site physics ────────────────────────────────────────────────────────
 
-    def _site_pressure(self) -> float:
-        t = self.target
+    def _centroid(self) -> TargetSite:
+        """Geographic centroid of all target sites (for ICE-D search)."""
+        lats = [t.lat for t in self.targets]
+        lons = [t.lon for t in self.targets]
+        elvs = [t.elv for t in self.targets]
+        t0   = self.targets[0]
+        return TargetSite(
+            name="centroid", lat=float(np.mean(lats)),
+            lon=float(np.mean(lons)), elv=float(np.mean(elvs)),
+            thick=t0.thick, rho=t0.rho, shield=t0.shield,
+            erosion=t0.erosion, yr=t0.yr,
+        )
+
+    @staticmethod
+    def _site_pressure(t: TargetSite) -> float:
         if t.elv >= 0:
             return float(ERA40atm([t.lat], [t.lon], [t.elv])[0])
         return float(antatm([t.elv])[0])
 
-    def _scaling_factor(self, pressure: float) -> float:
-        return float(stone2000([self.target.lat], [pressure], Fsp=1.0)[0])
+    @staticmethod
+    def _scaling_factor(t: TargetSite, pressure: float) -> float:
+        return float(stone2000([t.lat], [pressure], Fsp=1.0)[0])
 
-    def _thickness_correction(self) -> float:
-        return float(thickness([self.target.thick], [Lsp()], [self.target.rho])[0])
+    @staticmethod
+    def _thickness_correction(t: TargetSite) -> float:
+        return float(thickness([t.thick], [Lsp()], [t.rho])[0])
 
-    def _muon_rate(self, pressure: float, nuclide_idx: int = 3) -> float:
+    @staticmethod
+    def _muon_rate(pressure: float, nuclide_idx: int = 3) -> float:
         """Be-10 muon rate (nuclide_idx=3 for N10quartz in the 8-element vector)."""
         consts = make_consts()
         return float(consts.Pmu0[nuclide_idx]
@@ -297,16 +365,9 @@ class ProductionRateWorkflow:
                               max_dist_km: float = 1000.0,
                               min_samples: int = 3) -> "ProductionRateWorkflow":
         """
-        Fetch ICE-D calibration data and rank by distance to target.
+        Fetch ICE-D calibration data and rank by distance to the target area.
 
-        Parameters
-        ----------
-        dataset_id : int
-            ICE-D dataset to query (default 20 = all Be-10).
-        max_dist_km : float
-            Maximum distance to include (km). Default 1000 km.
-        min_samples : int
-            Warn if fewer than this many samples are found within max_dist_km.
+        Distance is measured from the centroid of all target points.
         """
         desc = ICED_DATASETS.get(dataset_id, f"ICE-D dataset {dataset_id}")
         print(f"Fetching {desc} from ICE-D...")
@@ -314,16 +375,18 @@ class ProductionRateWorkflow:
         all_samples = _parse_iced_into_samples(v3_text)
         print(f"  {len(all_samples)} total calibration samples retrieved.")
 
-        t = self.target
+        ctr = self._centroid()
         for s in all_samples:
-            s.dist_km = _haversine(t.lat, t.lon, s.lat, s.lon)
+            s.dist_km = _haversine(ctr.lat, ctr.lon, s.lat, s.lon)
         all_samples.sort(key=lambda s: s.dist_km)
 
         nearby = [s for s in all_samples if s.dist_km <= max_dist_km]
         self._cal_samples = nearby
 
-        print(f"\nNearest calibration samples to {t.name} "
-              f"({t.lat:.3f}°N, {t.lon:.3f}°W, {t.elv:.0f} m):")
+        ref_label = (f"{ctr.lat:.3f}°N, {ctr.lon:.3f}°W"
+                     if len(self.targets) > 1 else
+                     f"{self.targets[0].lat:.3f}°N, {self.targets[0].lon:.3f}°W")
+        print(f"\nNearest calibration samples (distances from {ref_label}):")
         print(f"  {'Dist (km)':>10}  {'Sample':<14}  {'Lat':>7}  {'Lon':>8}  "
               f"{'Age (yr BP)':>11}  Site")
         print("  " + "-" * 65)
@@ -354,92 +417,94 @@ class ProductionRateWorkflow:
 
     # ── Calibration ──────────────────────────────────────────────────────────
 
+    def _point_production(self, t: TargetSite, cal: CalibrationResult) -> PointResult:
+        """Compute P_local at a single target given an already-calibrated P_ref."""
+        P_atm = self._site_pressure(t)
+        SF    = self._scaling_factor(t, P_atm)
+        tc    = self._thickness_correction(t)
+        P_mu  = self._muon_rate(P_atm)
+        P_loc = cal.P_ref_SLHL * SF * tc * t.shield + P_mu
+        dP_loc = cal.dP_ref    * SF * tc * t.shield
+        return PointResult(
+            target_name=t.name, lat=t.lat, lon=t.lon, elv=t.elv,
+            scheme=cal.scheme, SF=SF, tc=tc, P_mu=P_mu,
+            P_local=P_loc, dP_local=dP_loc, source=cal.source,
+        )
+
     def calibrate(self, include_global: bool = True) -> "ProductionRateWorkflow":
         """
-        Compute local and (optionally) global reference production rates.
+        Compute reference production rates, then apply per target point.
 
-        Results are stored in self._results and printed via report().
+        P_ref (SLHL) is derived from the selected calibration samples and/or
+        the global default.  P_local is then computed independently for each
+        target point, accounting for its specific elevation, latitude, and
+        sample geometry.
         """
         consts = make_consts()
         idx    = consts.nuclides.index("N10quartz")
-        P_atm  = self._site_pressure()
-        SF     = self._scaling_factor(P_atm)
-        tc     = self._thickness_correction()
-        P_mu   = self._muon_rate(P_atm)
-        shield = self.target.shield
 
-        self._results = []
-        self._consts  = None  # reset
+        self._cal_results   = []
+        self._point_results = []
+        self._consts        = None
+
+        scheme_keys = [
+            ("St",   "refP_St",   "delrefP_St"),
+            ("Lm",   "refP_Lm",   "delrefP_Lm"),
+            ("LSDn", "refP_LSDn", "delrefP_LSDn"),
+        ]
 
         # ── Global defaults ──────────────────────────────────────────────────
         if include_global:
-            for sf_name, ref_key, dref_key in [
-                ("St",   "refP_St",   "delrefP_St"),
-                ("Lm",   "refP_Lm",   "delrefP_Lm"),
-                ("LSDn", "refP_LSDn", "delrefP_LSDn"),
-            ]:
-                P_ref  = float(getattr(consts, ref_key)[idx])
-                dP_ref = float(getattr(consts, dref_key)[idx])
-                P_loc  = P_ref * SF * tc * shield + P_mu
-                dP_loc = dP_ref * SF * tc * shield
-                self._results.append(ProductionRateResult(
-                    scheme=sf_name, P_ref_SLHL=P_ref, dP_ref=dP_ref,
-                    SF=SF, P_local=P_loc, dP_local=dP_loc,
-                    source="global default (Borchers et al. 2016)",
-                    n_sites=0, max_dist_km=0.0,
-                ))
+            for sf_name, ref_key, dref_key in scheme_keys:
+                cal = CalibrationResult(
+                    scheme     = sf_name,
+                    P_ref_SLHL = float(getattr(consts, ref_key)[idx]),
+                    dP_ref     = float(getattr(consts, dref_key)[idx]),
+                    source     = "global default (Borchers et al. 2016)",
+                )
+                self._cal_results.append(cal)
+                for t in self.targets:
+                    self._point_results.append(self._point_production(t, cal))
 
         # ── Local calibration from selected ICE-D samples ───────────────────
         if self._selected:
             v3_block = "\n".join(s.v3_block for s in self._selected)
             data   = parse_v3_input(v3_block)
             result = get_ages(data, control={"cal": 1, "result_type": "long"})
-            n      = result["n"]
+            n_res  = result["n"]
             max_d  = max(s.dist_km for s in self._selected)
             n_samp = len(self._selected)
-            source = (f"ICE-D local calibration "
-                      f"({n_samp} sample{'s' if n_samp>1 else ''}, "
-                      f"max {max_d:.0f} km away)")
+            source = (f"ICE-D local ({n_samp} sample{'s' if n_samp>1 else ''}, "
+                      f"max {max_d:.0f} km)")
 
-            for sf_name, ref_key, dref_key in [
-                ("St",   "refP_St",   "delrefP_St"),
-                ("Lm",   "refP_Lm",   "delrefP_Lm"),
-                ("LSDn", "refP_LSDn", "delrefP_LSDn"),
-            ]:
-                P_vals  = n[f"calc_P_{sf_name}"]
-                dP_vals = n[f"calc_delP_{sf_name}"]
+            local_consts = make_consts()
+
+            for sf_name, ref_key, _ in scheme_keys:
+                P_vals  = n_res[f"calc_P_{sf_name}"]
+                dP_vals = n_res[f"calc_delP_{sf_name}"]
                 ok = (P_vals > 0) & (dP_vals > 0)
                 if ok.sum() == 0:
                     continue
-                P_ref, dP_ref = _ewmean(P_vals[ok], dP_vals[ok])
+                P_ref, dP_formal = _ewmean(P_vals[ok], dP_vals[ok])
+                scatter = float(np.std(P_vals[ok], ddof=1)) if ok.sum() > 1 else dP_formal
+                dP_ref  = max(float(dP_formal), scatter)
 
-                # chi-squared of calibration
-                ewm, _ = _ewmean(P_vals[ok], dP_vals[ok])
-                chi2 = float(np.sum(((P_vals[ok] - ewm) / dP_vals[ok]) ** 2))
-                dof  = int(ok.sum()) - 1
+                chi2   = float(np.sum(((P_vals[ok] - P_ref) / dP_vals[ok]) ** 2))
+                dof    = int(ok.sum()) - 1
                 p_chi2 = _chi2_p(chi2, dof) if dof > 0 else None
 
-                # scatter uncertainty (larger of formal and scatter)
-                scatter = float(np.std(P_vals[ok], ddof=1)) if ok.sum() > 1 else dP_ref
-                dP_ref_final = max(dP_ref, scatter)
-
-                P_loc  = P_ref * SF * tc * shield + P_mu
-                dP_loc = dP_ref_final * SF * tc * shield
-
-                self._results.append(ProductionRateResult(
-                    scheme=sf_name, P_ref_SLHL=float(P_ref),
-                    dP_ref=float(dP_ref_final),
-                    SF=SF, P_local=float(P_loc), dP_local=float(dP_loc),
+                cal = CalibrationResult(
+                    scheme=sf_name, P_ref_SLHL=float(P_ref), dP_ref=dP_ref,
                     source=source, n_sites=n_samp, max_dist_km=max_d,
                     chi2_p=p_chi2,
-                ))
+                )
+                self._cal_results.append(cal)
+                for t in self.targets:
+                    self._point_results.append(self._point_production(t, cal))
 
-            # Store locally calibrated consts for optional dating
-            local_consts = make_consts()
-            for sf_name, ref_key in [("St","refP_St"),("Lm","refP_Lm"),("LSDn","refP_LSDn")]:
-                for r in self._results:
-                    if r.scheme == sf_name and r.n_sites > 0:
-                        getattr(local_consts, ref_key)[idx] = r.P_ref_SLHL
+                # store for optional dating
+                getattr(local_consts, ref_key)[idx] = float(P_ref)
+
             self._consts = local_consts
 
         return self
@@ -448,65 +513,76 @@ class ProductionRateWorkflow:
 
     def report(self) -> "ProductionRateWorkflow":
         """Print a transparent summary of the production rate results."""
-        t   = self.target
-        P_atm = self._site_pressure()
-        SF    = self._scaling_factor(P_atm)
-        tc    = self._thickness_correction()
+        multi = len(self.targets) > 1
 
         print()
         print("=" * 72)
         print("  PRODUCTION RATE REPORT")
         print("=" * 72)
-        print(f"  Target site:      {t.name}")
-        print(f"  Location:         {t.lat:.4f}°N, {t.lon:.4f}°W")
-        print(f"  Elevation:        {t.elv:.0f} m")
-        print(f"  ERA-40 pressure:  {P_atm:.2f} hPa")
-        print(f"  Stone2000 SF:     {SF:.4f}  (spallation only, Fsp=1)")
-        print(f"  Thickness corr:   {tc:.5f}  "
-              f"({t.thick} cm, {t.rho} g/cm³)")
-        if t.shield < 1.0:
-            print(f"  Shielding:        {t.shield:.4f}")
-        print()
         print("  Recommended scaling scheme: LSDn (Borchers et al. 2016,")
         print("  Lifton et al. 2014). St and Lm shown for comparison.")
         print()
 
-        # Group by source
-        sources = []
-        seen = set()
-        for r in self._results:
-            if r.source not in seen:
-                sources.append(r.source)
-                seen.add(r.source)
-
+        # ── Calibration summary ──────────────────────────────────────────────
+        sources = list(dict.fromkeys(c.source for c in self._cal_results))
         for source in sources:
-            rr = [r for r in self._results if r.source == source]
-            print(f"  Source: {source}")
-            if rr[0].n_sites > 0 and rr[0].chi2_p is not None:
-                print(f"    Chi-squared p-value: {rr[0].chi2_p:.3f}  "
-                      f"({'consistent' if rr[0].chi2_p > 0.05 else 'scattered'})")
-            print()
-            print(f"    {'Scheme':<6}  {'P_ref (SLHL)':>14}  "
-                  f"{'P_local':>10}  {'±':>8}  {'Unit'}")
-            print("    " + "-" * 56)
-            for r in rr:
-                unit = "dim'less" if r.scheme == "LSDn" else "at/g/yr"
-                slhl_str = f"{r.P_ref_SLHL:.4f} ± {r.dP_ref:.4f}"
-                print(f"    {r.scheme:<6}  {slhl_str:>14}  "
-                      f"{r.P_local:>10.4f}  {r.dP_local:>8.4f}  {unit}")
+            cals = [c for c in self._cal_results if c.source == source]
+            print(f"  Calibration source: {source}")
+            if cals[0].chi2_p is not None:
+                flag = "consistent" if cals[0].chi2_p > 0.05 else "scattered"
+                print(f"    Chi-squared p-value: {cals[0].chi2_p:.3f}  ({flag})")
+            print(f"    {'Scheme':<6}  {'P_ref at SLHL':>16}  Unit")
+            print("    " + "-" * 36)
+            for c in cals:
+                unit = "dimensionless" if c.scheme == "LSDn" else "at/g/yr"
+                print(f"    {c.scheme:<6}  "
+                      f"{c.P_ref_SLHL:.4f} ± {c.dP_ref:.4f}  {unit}")
             print()
 
-        # Comparison table if both global and local present
-        global_r = {r.scheme: r for r in self._results if r.n_sites == 0}
-        local_r  = {r.scheme: r for r in self._results if r.n_sites > 0}
-        if global_r and local_r:
-            print("  Local vs. global comparison (P_local):")
+        # ── Per-point local production rates ─────────────────────────────────
+        for source in sources:
+            pts = [p for p in self._point_results if p.source == source]
+            print(f"  Local production rates — {source}")
+            if multi:
+                hdr = (f"    {'Site':<16}  {'Elv(m)':>6}  "
+                       f"{'SF':>7}  {'P_local':>9}  {'±':>7}  Scheme")
+                print(hdr)
+                print("    " + "-" * 62)
+                for sf in ["St", "Lm", "LSDn"]:
+                    sf_pts = [p for p in pts if p.scheme == sf]
+                    unit = "(d'less)" if sf == "LSDn" else "(at/g/yr)"
+                    print(f"    ── {sf} {unit} " + "─" * 30)
+                    for p in sf_pts:
+                        print(f"    {p.target_name:<16}  {p.elv:>6.0f}  "
+                              f"{p.SF:>7.4f}  {p.P_local:>9.4f}  "
+                              f"{p.dP_local:>7.4f}")
+            else:
+                t = self.targets[0]
+                P_atm_val = self._site_pressure(t)
+                print(f"    Location: {t.lat:.4f}°N, {t.lon:.4f}°W, {t.elv:.0f} m")
+                print(f"    ERA-40 pressure: {P_atm_val:.2f} hPa")
+                print(f"    {'Scheme':<6}  {'SF':>7}  {'P_local':>10}  {'±':>8}  Unit")
+                print("    " + "-" * 46)
+                for p in pts:
+                    unit = "dim'less" if p.scheme == "LSDn" else "at/g/yr"
+                    print(f"    {p.scheme:<6}  {p.SF:>7.4f}  "
+                          f"{p.P_local:>10.4f}  {p.dP_local:>8.4f}  {unit}")
+            print()
+
+        # ── Global vs local comparison ───────────────────────────────────────
+        global_cal = {c.scheme: c for c in self._cal_results if c.n_sites == 0}
+        local_cal  = {c.scheme: c for c in self._cal_results if c.n_sites > 0}
+        if global_cal and local_cal and not multi:
+            t = self.targets[0]
+            g_pts = {p.scheme: p for p in self._point_results if p.source == next(iter(global_cal.values())).source}
+            l_pts = {p.scheme: p for p in self._point_results if p.source == next(iter(local_cal.values())).source}
+            print("  Global vs. local comparison at this site:")
             print(f"    {'Scheme':<6}  {'Global':>10}  {'Local':>10}  {'Diff':>8}  {'Rel %':>7}")
-            print("    " + "-" * 46)
+            print("    " + "-" * 48)
             for sf in ["St", "Lm", "LSDn"]:
-                if sf in global_r and sf in local_r:
-                    g = global_r[sf].P_local
-                    l = local_r[sf].P_local
+                if sf in g_pts and sf in l_pts:
+                    g = g_pts[sf].P_local
+                    l = l_pts[sf].P_local
                     print(f"    {sf:<6}  {g:>10.4f}  {l:>10.4f}  "
                           f"{l-g:>+8.4f}  {100*(l-g)/g:>+7.2f}%")
             print()
@@ -541,10 +617,10 @@ class ProductionRateWorkflow:
         )
         full_text = sample_line + "\n" + nuc_lines
 
-        consts = self._consts if (use_local and self._consts) else None
+        consts_arg = self._consts if (use_local and self._consts) else None
         data   = parse_v3_input(full_text)
         result = get_ages(data, control={"result_type": result_type},
-                          consts=consts)
+                          consts=consts_arg)
         n      = result["n"]
 
         source_label = "local calibration" if (use_local and self._consts) else "global default"
