@@ -3,7 +3,6 @@
 Python port of Greg Balco's v3 cosmogenic nuclide exposure age and production rate calibration calculator, originally implemented in MATLAB and served at [stoneage.ice-d.org](https://stoneage.ice-d.org/math/v3/) and [hess.ess.washington.edu](https://hess.ess.washington.edu/math/v3/).
 
 [![Tests](https://github.com/awickert/stoneage/actions/workflows/tests.yml/badge.svg)](https://github.com/awickert/stoneage/actions/workflows/tests.yml)
-[![Coverage](https://codecov.io/gh/awickert/stoneage/branch/main/graph/badge.svg)](https://codecov.io/gh/awickert/stoneage)
 
 ---
 
