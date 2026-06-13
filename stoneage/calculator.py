@@ -95,7 +95,8 @@ def get_ages(in_data: dict, control: dict = None, consts: Constants = None) -> d
     )
     n["sf_thick"] = sf_thick
 
-    sf_St = stone2000(np.array(s["lat"])[ni], pressure[ni])
+    # Fsp=1: spallation-only scaling factor; muon production is added separately below.
+    sf_St = stone2000(np.array(s["lat"])[ni], pressure[ni], Fsp=1.0)
     n["sf_St"] = sf_St
 
     # -----------------------------------------------------------------------
