@@ -15,6 +15,8 @@ Given a set of samples with measured cosmogenic nuclide concentrations and site 
 
 Both modes support three scaling schemes (St, Lm, LSDn) and five nuclide–mineral pairs.
 
+For a guided, non-expert workflow that handles local calibration from nearby ICE-D sites automatically, see [High-level workflow](#high-level-workflow) below.
+
 ---
 
 ## Installation
@@ -201,6 +203,224 @@ n = result["n"]
 # Minimum age → maximum production rate
 print(f"Max P_St: {n['calc_maxP_St'][0]:.4f} at/g/yr")
 ```
+
+---
+
+## High-level workflow
+
+`ProductionRateWorkflow` provides a transparent, step-by-step path from
+sample location to local production rate and (optionally) exposure age.
+It is designed so that each step is explicit and auditable, not hidden
+inside a black box.
+
+### Single location
+
+```python
+from stoneage.workflow import ProductionRateWorkflow
+
+wf = ProductionRateWorkflow(lat=46.2, lon=-91.8, elv=183,
+                             name="BoisBrule-headwaters")
+wf.find_calibration_data(max_dist_km=500)  # fetches ICE-D automatically
+wf.calibrate()   # computes global default AND locally calibrated P_ref
+wf.report()      # prints transparent production rate summary
+```
+
+Or with calibration data supplied directly (offline / custom dataset):
+
+```python
+wf.load_calibration_text(v3_text_block)
+wf.calibrate()
+wf.report()
+```
+
+### Multiple sample locations from a CSV
+
+The CSV must have columns `name, lat, lon, elevation`
+(optional: `thickness, density, shielding, erosion, year`).
+
+```python
+wf = ProductionRateWorkflow.from_csv("samples.csv")
+```
+
+By default, a production rate is computed **per point** — essential when
+samples span different elevations or latitudes, since
+P_local = P_ref × SF(lat, pressure) varies significantly between them.
+Pass `use_centroid=True` for a single rate at the group centroid instead.
+
+```python
+wf = ProductionRateWorkflow.from_csv("samples.csv", use_centroid=True)
+```
+
+### Optional dating step
+
+```python
+wf.date("SITE  Be-10  quartz  60000  1800  07KNSTD;")
+```
+
+Uses the locally calibrated production rate when one is available,
+falling back to the global default otherwise.
+
+### ICE-D dataset IDs
+
+`find_calibration_data(dataset_id=N)` accepts any of these:
+
+| ID | Dataset |
+|----|---------|
+| 20 | All Be-10 in quartz — most complete (default) |
+|  4 | CRONUS Primary Be-10 (Borchers et al. 2016) |
+|  3 | Balco — NE North America 2009 |
+|  2 | Stroeven — Scandinavia 2015 |
+|  1 | Young — Baffin Bay 2013 |
+
+---
+
+## Before computing exposure ages — corrections checklist
+
+The production rate is only part of the picture. Before a measured
+nuclide concentration can be converted to a reliable exposure age, several
+site-specific corrections must be applied or explicitly justified.
+Items marked **[implemented]** are handled by `stoneage` today; items
+marked **[placeholder]** are not yet computed automatically and must be
+addressed by the user before proceeding to dating.
+
+### 1. Topographic shielding **[placeholder]**
+
+Surrounding terrain blocks a fraction of the cosmic-ray flux. The effect
+is expressed as a shielding factor S ∈ (0, 1] applied to the spallogenic
+production rate:
+
+```
+P_spall_corrected = P_spall × S
+```
+
+The v3 format accepts a user-supplied scalar `shielding` field (default 1.0),
+but this library does not yet calculate S from a digital elevation model.
+Typical approaches:
+
+- Measure horizon angles in the field at 5–10° azimuth intervals and
+  integrate using the Dunne et al. (1999) formula.
+- Compute from a DEM using tools such as
+  [topoShield](https://github.com/yingkui2003/topo-shielding) or
+  CRONUS-Earth's online shielding calculator.
+- For gently rolling terrain, S ≈ 0.99–1.00 and the effect is negligible;
+  for steep valley walls or cliff-base samples, S can fall below 0.90.
+
+**Action required:** compute or measure S for each sample and pass it as
+the `shielding` argument to `ProductionRateWorkflow` or in the v3 sample line.
+
+### 2. Sample thickness **[implemented]**
+
+Spallogenic production decreases exponentially with depth into the sample.
+The thickness correction integrates over the sample volume:
+
+```
+sf_thick = (Λ / (ρ × z)) × (1 − exp(−ρ × z / Λ))
+```
+
+where Λ = 160 g cm⁻² (spallogenic attenuation length), ρ is rock density
+(g cm⁻³), and z is sample thickness (cm). This is computed automatically
+from the `thickness` and `density` fields.
+
+For samples thicker than ~5 cm, the correction exceeds 3% and should not
+be neglected. The muon production rate is not corrected for thickness
+(muon attenuation length >> typical sample thickness).
+
+### 3. Snow shielding **[placeholder]**
+
+Seasonal snow cover attenuates the cosmic-ray flux in the same way as
+rock, reducing the effective annual production rate. The correction
+requires knowledge of the mean annual snow depth and density:
+
+```
+P_corrected = P × exp(−ρ_snow × z_snow / Λ)
+```
+
+For alpine and high-latitude sites this can reduce production rates by
+5–20%. Climatological snow data can be obtained from gridded products
+such as SNODAS, ERA5, or local weather stations.
+
+**Action required:** assess whether snow cover is significant at your
+site. For ice-free low-latitude sites the correction is typically < 1%.
+
+### 4. Erosion and surface lowering **[implemented — user-supplied rate]**
+
+If the surface has been eroding continuously since exposure began, the
+nuclide concentration is lower than it would be for a stable surface of
+the same age. The production–decay–erosion equation is:
+
+```
+N = Σ (Pᵢ / (λ + ε ρ / Λᵢ)) × (1 − exp(−(λ + ε ρ / Λᵢ) × t))
+```
+
+where ε is the erosion rate (cm yr⁻¹). A non-zero `erosion` value in
+the v3 sample line activates this term. The default is 0 (no erosion),
+which gives a minimum age if erosion has in fact occurred.
+
+**Action required:** estimate ε from independent evidence (e.g. cosmogenic
+nuclide depth profiles, micro-erosion meters, lichenometry) or justify
+the zero-erosion assumption. For glacially polished bedrock, ε ≈ 0 is
+often defensible; for soil-mantled surfaces it may not be.
+
+### 5. Sediment cover and post-exposure burial **[placeholder]**
+
+If the sample was covered by sediment, soil, or ice after initial
+exposure, production was attenuated or halted during that period.
+Simple burial reduces the apparent age; intermittent burial creates a
+complex exposure history that cannot be captured by the single-exposure
+age equation.
+
+For samples with suspected burial histories, two-nuclide (banana)
+plots using paired Be-10/Al-26 or Be-10/Ne-21 can identify complex
+exposure. `stoneage` can compute the nuclide concentrations needed for
+a banana plot from multi-nuclide `get_ages` output, but does not yet
+model burial explicitly.
+
+### 6. Inheritance (pre-exposure) **[placeholder]**
+
+If the sample surface was exposed to cosmic rays before the event being
+dated (e.g. prior to glacial transport and deposition), it carries an
+inherited nuclide inventory that adds to the post-depositional signal.
+This inflates the apparent age.
+
+Inheritance is typically assessed by:
+- Measuring multiple samples from the same landform (scatter indicates
+  variable inheritance).
+- Sampling cobbles or boulders that were likely deeply shielded during
+  transport.
+- Using short-lived nuclides (C-14) alongside long-lived nuclides.
+
+No automatic correction is implemented; the user must evaluate
+inheritance risk from field context.
+
+### 7. Depth profile corrections **[placeholder]**
+
+For samples taken at depth below the surface (e.g. cores, hand samples
+from excavations), muon production becomes dominant over spallation.
+The production rate at depth z (g cm⁻²) is:
+
+```
+P(z) = P_spall × exp(−z / Λ_sp) + P_mu(z)
+```
+
+where P_mu(z) follows a more complex depth dependence (see Granger &
+Muzikar 2001). Depth profiles can also be inverted to simultaneously
+solve for age and erosion rate.
+
+**Action required:** if any sample was not collected at the surface,
+the production rate calculation must account for the sample depth.
+
+### 8. Isostatic rebound and paleoelevation **[placeholder]**
+
+In glaciated regions, ice loading suppresses the land surface and
+post-glacial rebound raises it. A sample at 500 m today may have been
+at 400 m when first exposed, changing the atmospheric pressure and
+therefore the production rate over time. For most Holocene and
+Late Pleistocene samples the effect is < 2%, but it can be significant
+for long-exposed surfaces in rapidly rebounding regions (e.g. Fennoscandia,
+Hudson Bay).
+
+The v3 calculator supports time-variable pressure via an isostatic
+rebound module that is not yet ported to this library.
 
 ---
 
