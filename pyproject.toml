@@ -12,6 +12,12 @@ dependencies = [
     "scipy",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 
