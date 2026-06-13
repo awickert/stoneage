@@ -17,3 +17,8 @@ where = ["."]
 
 [tool.setuptools.package-data]
 stoneage = ["data/*.mat"]
+
+[tool.pytest.ini_options]
+markers = [
+    "network: tests that require a live internet connection to stoneage.ice-d.org",
+]

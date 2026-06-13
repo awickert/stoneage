@@ -114,9 +114,7 @@ def _load_lsdn(nuclide: str):
             "N26quartz": "LSDn2015_N26quartz.mat",
         }
         mat = scipy.io.loadmat(_DATA_DIR / fname_map[nuclide])
-        key = "sfN3pxol" if nuclide in ("N3olivine", "N3pyroxene") else f"sf{nuclide}"
-        if nuclide == "N10pyroxene":
-            key = "sfN10quartz"
+        key = f"sf{nuclide}" if nuclide not in ("N10pyroxene",) else "sfN10quartz"
         d = mat[key]
         _lsdn_cache[nuclide] = {"Rc": Rc, "p": p, "b": d["b"][0, 0], "m": d["m"][0, 0]}
     return _lsdn_cache[nuclide]
