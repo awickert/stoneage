@@ -587,7 +587,36 @@ class ProductionRateWorkflow:
                           f"{l-g:>+8.4f}  {100*(l-g)/g:>+7.2f}%")
             print()
 
+        self._print_corrections_checklist()
         return self
+
+    def _print_corrections_checklist(self):
+        """Print a summary of which corrections are applied and which are not."""
+        t0 = self.targets[0]
+        has_erosion  = any(t.erosion > 0 for t in self.targets)
+        has_shielding = any(t.shield < 1.0 for t in self.targets)
+
+        print("  ── Corrections checklist ─────────────────────────────────────")
+        print("  [OK] Sample thickness correction applied")
+        print(f"  [OK] Erosion rate: "
+              + ("user-supplied (> 0)" if has_erosion else "0 cm/yr (assumed stable surface)"))
+        print(f"  [OK] Topographic shielding: "
+              + ("user-supplied scalar" if has_shielding else "1.0 (no shielding assumed)"))
+        print()
+        print("  [  ] Snow shielding          — not applied; assess for seasonal snow cover")
+        print("  [  ] Vegetation / soil cover  — not applied; assess for forested / soil-mantled sites")
+        print("  [  ] Surface geometry / dip   — assumes horizontal planar surface")
+        print("  [  ] Boulder stability        — assumes no tilting or rolling since deposition")
+        print("  [  ] Rock exfoliation         — episodic spalling not distinguished from steady erosion")
+        print("  [  ] Paleoelevation / rebound — uses current elevation throughout")
+        print("  [  ] Submergence / water cover — not applied")
+        print("  [  ] Ice cover history        — not applied; zero production assumed during glaciation")
+        print("  [  ] Inheritance / pre-exposure — no check; assess from field context")
+        print("  [  ] Nucleogenic He-3 / Ne-21 — no correction applied")
+        print("  [  ] He-3 diffusive loss      — not modelled")
+        print()
+        print("  See README 'Before computing exposure ages' for details on each item.")
+        print()
 
     # ── Optional dating ──────────────────────────────────────────────────────
 

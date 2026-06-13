@@ -422,6 +422,187 @@ Hudson Bay).
 The v3 calculator supports time-variable pressure via an isostatic
 rebound module that is not yet ported to this library.
 
+### 9. Nucleogenic helium and neon **[placeholder]**
+
+For ³He and ²¹Ne, non-cosmogenic production occurs through α-particle
+bombardment of target nuclei (α-n reactions) from the ²³⁸U, ²³⁵U, and
+²³²Th decay chains. In minerals with high U/Th concentrations (e.g. apatite,
+zircon in the host rock) or in samples with a low cosmogenic/nucleogenic
+ratio (old samples, slowly eroding surfaces), this nucleogenic component
+can dominate the measured signal. The correction requires knowledge of U, Th,
+and Li concentrations in the mineral and surrounding rock matrix.
+
+- **Affected nuclides:** ³He (olivine, pyroxene), ²¹Ne (quartz)
+- **Typical magnitude:** < 5% for young surfaces in typical mafic rocks;
+  can exceed 50% for slowly exposed olivine with high U/Th host rock
+- **Key references:** Niedermann (2002, *Rev. Min. Geochem.*);
+  Blard & Farley (2008, *EPSL*); Farley et al. (2006, *GCA*)
+
+**Action required:** Measure U, Th, and Li in the mineral/rock and apply
+the nucleogenic correction before using ³He or ²¹Ne concentrations as
+purely cosmogenic.
+
+### 10. Diffusive loss of helium-3 **[placeholder]**
+
+³He is mobile in some minerals at surface temperatures, particularly in
+pyroxene and olivine with small grain sizes or at high geothermal gradients.
+Diffusive loss reduces the apparent cosmogenic ³He concentration, yielding
+ages that are too young. The closure temperature for ³He in olivine is
+roughly 40–80 °C; at typical surface conditions diffusion is negligible
+for Holocene timescales but can be significant (>10%) for samples older
+than ~1 Ma or from geothermally active regions.
+
+- **Affected nuclides:** ³He only (²¹Ne, ¹⁰Be, ²⁶Al are not affected)
+- **Key references:** Shuster et al. (2004, *EPSL*);
+  Tremblay et al. (2014, *GCA*)
+
+**Action required:** For old samples or warm-climate sites, model diffusive
+loss using the sample's thermal history before interpreting ³He concentrations.
+
+### 11. Surface geometry and dip **[placeholder]**
+
+The thickness and shielding calculations assume a horizontal, planar sample
+surface. For dipping outcrops or samples collected from inclined rock faces,
+the effective cosmic-ray flux is altered by the surface orientation relative
+to the vertical. The correction modifies both the spallogenic and muonic
+production rates. For surfaces dipping at > 20–30°, the effect exceeds 5%.
+
+- **All nuclides affected equally (geometry effect)**
+- **Key references:** Gosse & Phillips (2001, *Quat. Sci. Rev.*);
+  Dunai (2010, *Cosmogenic Nuclides*, Cambridge)
+
+**Action required:** Measure the strike and dip of the sampled surface and
+apply the geometric correction, or restrict sampling to near-horizontal surfaces.
+
+### 12. Rock exfoliation and episodic mass loss **[placeholder]**
+
+Many rock surfaces (especially granites and other coarse-grained rocks)
+lose material through periodic spalling — sudden detachment of thin slabs —
+rather than through the steady grain-by-grain erosion assumed in the
+erosion rate equation. A single spall event removes the nuclide-rich outer
+layer and partially resets the surface concentration, causing an apparent age
+that underestimates the true exposure duration.
+
+Episodic spalling cannot be distinguished from steady erosion using a single
+surface sample. Evidence for exfoliation includes fresh sub-horizontal
+fracture surfaces, curved exfoliation sheets, and scatter among samples
+from the same surface.
+
+- **All nuclides affected; greatest impact near saturation**
+- **Key reference:** Bierman (1994, *JGR*)
+
+**Action required:** Inspect the sample surface for exfoliation features.
+If present, interpret apparent ages as minimum estimates and consider depth
+profiles to constrain the exposure history.
+
+### 13. Vegetation and soil cover **[placeholder]**
+
+Organic material and soil above the sample surface attenuate the cosmic-ray
+flux by the same exponential law as snow:
+
+```
+P_corrected = P × exp(−ρ_cover × z_cover / Λ)
+```
+
+Typical soil densities are 1.0–1.5 g cm⁻³; a 10 cm soil layer reduces
+production by ~6–10%. For forest-covered sites or paleosols, the long-term
+mean cover thickness matters, not just the present-day value.
+
+- **All nuclides affected equally**
+- **Key reference:** Gosse & Phillips (2001, *Quat. Sci. Rev.*)
+
+**Action required:** Estimate mean cover thickness and density over the
+exposure period and apply the correction, or restrict sampling to bare
+bedrock outcrops where cover is demonstrably absent.
+
+### 14. Non-planar and rounded boulder surfaces **[placeholder]**
+
+The standard production rate equation assumes a flat, semi-infinite slab.
+For rounded boulders or convex bedrock knobs, the geometry differs: a curved
+surface subtends a smaller solid angle to the incoming flux, and near-surface
+production is averaged over a larger volume. The CRONUS-Earth shielding
+calculators include analytical corrections for common geometries (sphere,
+cylinder, hemisphere).
+
+- **All nuclides affected; typically < 2% for boulders > 1 m diameter**
+- **Key reference:** Gosse & Phillips (2001, *Quat. Sci. Rev.*)
+
+### 15. Boulder stability and potential tilting **[placeholder]**
+
+The production rate calculation assumes the sampled boulder face has
+maintained a fixed orientation since deposition. If a boulder has tilted,
+rolled, or partially buried since exposure began, the cosmic-ray dose is
+distributed differently among the boulder faces and the apparent age of
+the sampled face is biased. Complete overturn sets the apparent age back
+to zero.
+
+Multiple faces sampled from the same boulder should yield consistent
+ages if the boulder has been stable; divergent ages indicate movement.
+Anomalously young or old samples in a population often reflect tilted or
+exfoliated boulders rather than a true age spread.
+
+- **All nuclides affected**
+- **Key reference:** Putkonen & Swanson (2003, *Quat. Res.*)
+
+**Action required:** Sample multiple faces of key boulders where feasible;
+document field evidence for stability (lichen, weathering rind consistency,
+structural context).
+
+### 16. Submergence and water cover **[placeholder]**
+
+For samples that have been periodically or continuously submerged —
+intertidal surfaces, lake beds, moraine crests below a proglacial lake —
+water provides additional shielding at ~1.0 g cm⁻³. The correction uses
+the same exponential form as snow and soil but requires a hydrological
+history of the site.
+
+- **All nuclides affected**
+- **Key reference:** Gosse & Phillips (2001, *Quat. Sci. Rev.*)
+
+### 17. Cl-36: chemical composition and thermal neutron production **[placeholder]**
+
+³⁶Cl is produced by three mechanisms that all depend strongly on the
+target rock chemistry: spallation of Ca and K, and capture of thermal
+and epithermal neutrons by ³⁵Cl. The thermal neutron flux itself depends
+on the hydrogen, boron, and gadolinium content of the surrounding rock (which
+moderate and absorb neutrons). Whole-rock major- and trace-element analyses
+(Ca, K, Cl, Ti, Fe, B, Gd, Li, U, Th) are required for a reliable ³⁶Cl age.
+
+`stoneage` does not currently support ³⁶Cl calculations. The CRONUS-Earth
+³⁶Cl calculator at stoneage.ice-d.org/math/Cl36/ handles this nuclide.
+
+- **³⁶Cl only**
+- **Key references:** Marrero et al. (2016, *Quat. Geochronol.*);
+  Zreda et al. (1991, *EPSL*)
+
+### 18. Atmospheric pressure at sea level through time **[placeholder]**
+
+For sites near modern sea level in regions with large glacio-isostatic
+adjustment, the relative sea level has changed substantially since deglaciation.
+A surface now at sea level may have been below sea level (and therefore
+shielded by water) during part of its exposure. Conversely, isostatic uplift
+may have raised a site from below sea level to its current elevation, exposing
+it for the first time. Neither effect is captured by ERA-40 pressure at
+the current elevation.
+
+- **All nuclides; greatest impact for near-sea-level sites in areas of
+  > 50 m relative sea level change**
+- **Key reference:** Lambeck et al. (2014, *PNAS*) for global RSL histories
+
+### 19. Cosmogenic nuclide production in ice-covered periods **[placeholder]**
+
+During periods of ice sheet or glacier cover, production is reduced or
+halted entirely depending on ice thickness. For sites that were deglaciated
+during the exposure period, the pre-deglaciation production under ice must
+be accounted for. Thick ice (> 30 m water equivalent) effectively suppresses
+spallogenic production; thin ice allows some muogenic production at depth.
+
+This correction requires an ice thickness and timing history, typically
+from glaciological or glacial geomorphological reconstruction.
+
+- **All nuclides; critical for any deglaciation study**
+- **Key reference:** Balco (2011, *Quat. Sci. Rev.*)
+
 ---
 
 ## Validation
