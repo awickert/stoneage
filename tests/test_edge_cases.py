@@ -528,3 +528,182 @@ def test_csv_to_v3_raises_for_location_only():
             csv_to_v3(path)
     finally:
         os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# csv_to_v3: He-3, C-14, and error paths
+# ---------------------------------------------------------------------------
+
+_MV_CSV = """\
+name,lat,lon,elevation,elv_flag,thickness,density,shielding,erosion,year,nuclide,mineral,concentration,uncertainty,standard
+PH-1,41.1,-70.8,22,std,2.5,2.65,0.98,0.0,2005,Be-10,quartz,188200,3400,07KNSTD
+"""
+
+_HE3_CSV = """\
+name,lat,lon,elevation,elv_flag,thickness,density,shielding,erosion,year,nuclide,mineral,concentration,uncertainty,standard,standard_value
+HE3-S,40.0,-105.0,3000,std,2.0,3.0,1.0,0.0,2010,He-3,pyroxene,2.50E+06,1.25E+05,CRONUS-P,5.20E+09
+"""
+
+_C14_CSV = """\
+name,lat,lon,elevation,elv_flag,thickness,density,shielding,erosion,year,nuclide,mineral,concentration,uncertainty,standard
+C14-S,41.0,-72.0,50,std,2.0,2.65,1.0,0.0,2010,C-14,quartz,95000,5000,NONE
+"""
+
+_BAD_NUC_CSV = """\
+name,lat,lon,elevation,elv_flag,thickness,density,shielding,erosion,year,nuclide,mineral,concentration,uncertainty,standard
+BAD,41.0,-70.0,10,std,2.0,2.65,1.0,0.0,2010,Tc-99,quartz,1000,50,NONE
+"""
+
+_HE3_NOSTDVAL_CSV = """\
+name,lat,lon,elevation,elv_flag,thickness,density,shielding,erosion,year,nuclide,mineral,concentration,uncertainty,standard
+HE3-S,40.0,-105.0,3000,std,2.0,3.0,1.0,0.0,2010,He-3,pyroxene,2.50E+06,1.25E+05,CRONUS-P
+"""
+
+
+def test_csv_to_v3_he3_with_standard_value():
+    """He-3 rows need a standard_value column; resulting line has 7 fields."""
+    path = _write_tmp(_HE3_CSV)
+    try:
+        v3 = csv_to_v3(path)
+    finally:
+        os.unlink(path)
+    assert "HE3-S He-3 pyroxene 2.50E+06 1.25E+05 CRONUS-P 5.20E+09;" in v3
+
+
+def test_csv_to_v3_he3_parses_correctly():
+    """He-3 v3 text produced by csv_to_v3 must pass parse_v3_input."""
+    path = _write_tmp(_HE3_CSV)
+    try:
+        v3 = csv_to_v3(path)
+    finally:
+        os.unlink(path)
+    data = parse_v3_input(v3)
+    assert data["n"]["nuclide"] == ["N3pyroxene"]
+
+
+def test_csv_to_v3_he3_missing_standard_value_raises():
+    """He-3 row without standard_value column must raise a clear ValueError."""
+    path = _write_tmp(_HE3_NOSTDVAL_CSV)
+    try:
+        with pytest.raises(ValueError, match="standard_value"):
+            csv_to_v3(path)
+    finally:
+        os.unlink(path)
+
+
+def test_csv_to_v3_c14_no_standard_in_output():
+    """C-14 v3 line has only 5 fields (no standard); csv_to_v3 must omit it."""
+    path = _write_tmp(_C14_CSV)
+    try:
+        v3 = csv_to_v3(path)
+    finally:
+        os.unlink(path)
+    line = [l for l in v3.split("\n") if "C-14" in l][0]
+    assert line == "C14-S C-14 quartz 95000 5000;"
+
+
+def test_csv_to_v3_c14_parses_correctly():
+    """C-14 v3 text produced by csv_to_v3 must pass parse_v3_input."""
+    path = _write_tmp(_C14_CSV)
+    try:
+        v3 = csv_to_v3(path)
+    finally:
+        os.unlink(path)
+    data = parse_v3_input(v3)
+    assert data["n"]["nuclide"] == ["N14quartz"]
+
+
+def test_csv_to_v3_bad_nuclide_raises():
+    """Unrecognized nuclide name must raise ValueError."""
+    path = _write_tmp(_BAD_NUC_CSV)
+    try:
+        with pytest.raises(ValueError, match="Unrecognized nuclide"):
+            csv_to_v3(path)
+    finally:
+        os.unlink(path)
+
+
+# ---------------------------------------------------------------------------
+# from_csv: centroid path with full CSV still stores _v3_text
+# ---------------------------------------------------------------------------
+
+def test_from_csv_centroid_stores_v3_text():
+    """use_centroid=True should collapse targets to one but keep _v3_text."""
+    path = _write_tmp(_FULL_CSV)
+    try:
+        wf = ProductionRateWorkflow.from_csv(path, use_centroid=True)
+    finally:
+        os.unlink(path)
+    assert len(wf.targets) == 1
+    assert wf.targets[0].name.endswith("_centroid")
+    assert wf._v3_text is not None
+
+
+# ---------------------------------------------------------------------------
+# date_all: global-vs-local comparison path (offline, synthetic calibration)
+# ---------------------------------------------------------------------------
+
+_SCT_CAL_TEXT = """\
+SCT-01 56.8 -4.9 600 std 3.0 2.65 1.0 0.0 2015;
+SCT-01 Be-10 quartz 97500 2925 07KNSTD;
+SCT-01 true_t SCT 13500 200;
+SCT-02 56.9 -4.7 580 std 2.5 2.65 1.0 0.0 2015;
+SCT-02 Be-10 quartz 102100 3063 07KNSTD;
+SCT-02 true_t SCT 14200 250;
+"""
+
+
+def _make_calibrated_wf(csv_content):
+    """Helper: load CSV, apply synthetic calibration, run calibrate()."""
+    path = _write_tmp(csv_content)
+    try:
+        wf = ProductionRateWorkflow.from_csv(path)
+    finally:
+        os.unlink(path)
+    wf.load_calibration_text(_SCT_CAL_TEXT)
+    wf.calibrate(include_global=True)
+    return wf
+
+
+def test_date_all_comparison_returns_local_result():
+    """When local calibration exists, date_all() returns locally calibrated ages."""
+    wf = _make_calibrated_wf(_MV_CSV)
+    result_local = wf.date_all(use_local=True)
+
+    # Global-only result for comparison
+    path = _write_tmp(_MV_CSV)
+    try:
+        wf_g = ProductionRateWorkflow.from_csv(path)
+    finally:
+        os.unlink(path)
+    result_global = wf_g.date_all(use_local=False)
+
+    # Local and global should differ (SCT calibration shifts ages)
+    t_local  = result_local["n"]["t_St"][0]
+    t_global = result_global["n"]["t_St"][0]
+    assert abs(t_local - t_global) > 100, (
+        f"Local ({t_local:.0f}) and global ({t_global:.0f}) ages should differ"
+    )
+
+
+def test_date_all_comparison_output_contains_headers(capsys):
+    """Comparison table must have Global, Local, and Shift column headers."""
+    wf = _make_calibrated_wf(_MV_CSV)
+    wf.date_all(use_local=True)
+    out = capsys.readouterr().out
+    assert "Global (yr)" in out
+    assert "Local (yr)" in out
+    assert "Shift" in out
+
+
+def test_date_all_no_local_shows_global_only(capsys):
+    """Without calibration, date_all() prints global-only table (no Shift column)."""
+    path = _write_tmp(_MV_CSV)
+    try:
+        wf = ProductionRateWorkflow.from_csv(path)
+    finally:
+        os.unlink(path)
+    wf.date_all(use_local=True)
+    out = capsys.readouterr().out
+    assert "global default" in out
+    assert "Shift" not in out
