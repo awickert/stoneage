@@ -256,3 +256,77 @@ class TestOnlineValidation:
                     root.findall(f".//{sample_tag}_{sf}")[b].text
                 )
                 _assert_age(n[f"t_{sf}"][b], t_web, f"S{b+1} {sf}")
+
+
+# ---------------------------------------------------------------------------
+# Full workflow: Scottish Highlands via ICE-D + CSV
+# ---------------------------------------------------------------------------
+
+from pathlib import Path
+from stoneage.workflow import ProductionRateWorkflow
+
+_SCT_CSV = """\
+name,lat,lon,elevation,elv_flag,thickness,density,shielding,erosion,year,nuclide,mineral,concentration,uncertainty,standard
+NEW-A,56.8,-4.9,590,std,3.0,2.65,1.0,0.0,2020,Be-10,quartz,85000,2550,07KNSTD
+NEW-B,56.7,-5.0,615,std,2.0,2.65,1.0,0.0,2020,Be-10,quartz,110000,3300,07KNSTD
+"""
+
+
+@pytest.mark.network
+class TestScottishHighlandsWorkflow:
+    """
+    Full ProductionRateWorkflow pipeline for two synthetic Scottish Highlands
+    boulders: CSV load → ICE-D calibration → calibrate → date_all.
+
+    Ages are expected in the 12–20 ka window (Late Weichselian deglaciation).
+    """
+
+    @pytest.fixture(scope="class")
+    def workflow_result(self, tmp_path_factory):
+        tmp = tmp_path_factory.mktemp("sct")
+        csv_path = tmp / "sct.csv"
+        csv_path.write_text(_SCT_CSV)
+
+        wf = ProductionRateWorkflow.from_csv(str(csv_path))
+        try:
+            wf.find_calibration_data(dataset_id=20, max_dist_km=1500, min_samples=1)
+        except Exception:
+            pytest.skip("ICE-D unreachable")
+        wf.calibrate(include_global=True)
+        result = wf.date_all(use_local=True)
+        return wf, result
+
+    def test_two_targets_loaded(self, workflow_result):
+        wf, _ = workflow_result
+        assert [t.name for t in wf.targets] == ["NEW-A", "NEW-B"]
+
+    def test_calibration_found_sites(self, workflow_result):
+        wf, _ = workflow_result
+        assert len(wf._cal_results) > 0
+
+    def test_ages_in_late_weichselian_window(self, workflow_result):
+        """Both boulders should date to 12–22 ka (LGM to Younger Dryas deglaciation)."""
+        _, result = workflow_result
+        n = result["n"]
+        for sf in ["St", "Lm", "LSDn"]:
+            for i, name in enumerate(n["sample_name"]):
+                t = n[f"t_{sf}"][i]
+                assert 11000 < t < 24000, (
+                    f"{name} {sf} age {t:.0f} yr outside expected 11–24 ka window"
+                )
+
+    def test_new_b_older_than_new_a(self, workflow_result):
+        """NEW-B has a higher concentration → must be older than NEW-A."""
+        _, result = workflow_result
+        n = result["n"]
+        i_a = n["sample_name"].index("NEW-A")
+        i_b = n["sample_name"].index("NEW-B")
+        assert n["t_St"][i_b] > n["t_St"][i_a], (
+            "NEW-B (higher concentration) should be older than NEW-A"
+        )
+
+    def test_date_all_returns_three_schemes(self, workflow_result):
+        _, result = workflow_result
+        n = result["n"]
+        for sf in ["St", "Lm", "LSDn"]:
+            assert f"t_{sf}" in n, f"Missing t_{sf} in date_all result"

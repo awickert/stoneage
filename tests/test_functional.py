@@ -660,3 +660,85 @@ class TestConstants:
         assert len(c.refP_LSDn) == n
         assert len(c.Pmu0)      == n
         assert len(c.l)         == n
+
+
+# ---------------------------------------------------------------------------
+# H. CSV workflow — from_csv() + date_all() round-trip
+# ---------------------------------------------------------------------------
+
+import tempfile, os
+from stoneage import csv_to_v3
+from stoneage.workflow import ProductionRateWorkflow
+
+_MV_CSV = """\
+name,lat,lon,elevation,elv_flag,thickness,density,shielding,erosion,year,nuclide,mineral,concentration,uncertainty,standard
+PH-1,41.1,-70.8,22,std,2.5,2.65,0.98,0.0,2005,Be-10,quartz,188200,3400,07KNSTD
+"""
+
+
+class TestCSVWorkflow:
+    """Round-trip: ages from date_all() must match direct parse_v3_input + get_ages."""
+
+    def _write_tmp(self, content):
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
+        f.write(content)
+        f.close()
+        return f.name
+
+    def test_martha_vineyard_csv_ages_match_direct_v3(self):
+        """
+        Martha's Vineyard PH-1 dated via date_all() must give the same ages
+        as calling parse_v3_input + get_ages on the equivalent v3 text directly.
+        """
+        path = self._write_tmp(_MV_CSV)
+        try:
+            # via CSV workflow
+            wf     = ProductionRateWorkflow.from_csv(path)
+            csv_result = wf.date_all()
+
+            # via direct v3 text
+            v3_text = csv_to_v3(path)
+            direct_result = get_ages(parse_v3_input(v3_text),
+                                     control={"result_type": "long"})
+        finally:
+            os.unlink(path)
+
+        for sf in ["St", "Lm", "LSDn"]:
+            t_csv    = csv_result["n"][f"t_{sf}"][0]
+            t_direct = direct_result["n"][f"t_{sf}"][0]
+            assert abs(t_csv - t_direct) < 0.1, (
+                f"{sf}: date_all()={t_csv:.1f}, direct={t_direct:.1f}"
+            )
+
+    def test_martha_vineyard_age_range(self):
+        """
+        PH-1 Martha's Vineyard: all three schemes should give ~45–58 ka
+        (reasonable for this Late Pleistocene moraine sample).
+        """
+        path = self._write_tmp(_MV_CSV)
+        try:
+            wf     = ProductionRateWorkflow.from_csv(path)
+            result = wf.date_all()
+        finally:
+            os.unlink(path)
+
+        n = result["n"]
+        for sf in ["St", "Lm", "LSDn"]:
+            t = n[f"t_{sf}"][0]
+            assert 44000 < t < 59000, (
+                f"PH-1 {sf} age {t:.0f} yr outside expected 44–59 ka window"
+            )
+
+    def test_martha_vineyard_scheme_consistency(self):
+        """All three scaling schemes should agree within 10 %."""
+        path = self._write_tmp(_MV_CSV)
+        try:
+            wf     = ProductionRateWorkflow.from_csv(path)
+            result = wf.date_all()
+        finally:
+            os.unlink(path)
+
+        n = result["n"]
+        ages = [n[f"t_{sf}"][0] for sf in ["St", "Lm", "LSDn"]]
+        spread = (max(ages) - min(ages)) / np.mean(ages)
+        assert spread < 0.10, f"Scheme spread {100*spread:.1f}% > 10%"

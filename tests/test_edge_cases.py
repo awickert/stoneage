@@ -409,3 +409,122 @@ class TestParserEdgeCases:
         )
         d = parse_v3_input(text)
         assert d["n"]["nuclide"] == ["N14quartz"]
+
+
+# ---------------------------------------------------------------------------
+# csv_to_v3 and from_csv (full-format CSV)
+# ---------------------------------------------------------------------------
+
+import tempfile, os, csv as csv_mod
+from stoneage import csv_to_v3
+from stoneage.workflow import ProductionRateWorkflow
+
+_FULL_CSV = """\
+name,lat,lon,elevation,elv_flag,thickness,density,shielding,erosion,year,nuclide,mineral,concentration,uncertainty,standard
+PH-1,41.1,-70.8,22,std,2.5,2.65,0.98,0.0,2005,Be-10,quartz,188200,3400,07KNSTD
+SITE2,46.2,-91.8,183,std,2.0,2.65,1.0,0.0,2010,Be-10,quartz,60000,1800,07KNSTD
+SITE2,46.2,-91.8,183,std,2.0,2.65,1.0,0.0,2010,Al-26,quartz,380000,12000,KNSTD
+"""
+
+_LOCATION_CSV = """\
+name,lat,lon,elevation
+PH-1,41.1,-70.8,22
+SITE2,46.2,-91.8,183
+"""
+
+
+def _write_tmp(content):
+    f = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False)
+    f.write(content)
+    f.close()
+    return f.name
+
+
+def test_csv_to_v3_be10():
+    path = _write_tmp(_FULL_CSV)
+    try:
+        v3 = csv_to_v3(path)
+    finally:
+        os.unlink(path)
+    assert "PH-1 41.1 -70.8 22 std 2.5 2.65 0.98 0.0 2005;" in v3
+    assert "PH-1 Be-10 quartz 188200 3400 07KNSTD;" in v3
+
+
+def test_csv_to_v3_dual_nuclide_same_sample():
+    path = _write_tmp(_FULL_CSV)
+    try:
+        v3 = csv_to_v3(path)
+    finally:
+        os.unlink(path)
+    # SITE2 appears once as a sample line, twice as nuclide lines
+    sample_lines = [l for l in v3.split("\n") if "SITE2" in l and "46.2" in l]
+    nuc_lines    = [l for l in v3.split("\n") if "SITE2" in l and "quartz" in l]
+    assert len(sample_lines) == 1
+    assert len(nuc_lines) == 2
+
+
+def test_csv_to_v3_parses_cleanly():
+    """v3 text produced by csv_to_v3 must pass through parse_v3_input."""
+    path = _write_tmp(_FULL_CSV)
+    try:
+        v3 = csv_to_v3(path)
+    finally:
+        os.unlink(path)
+    data = parse_v3_input(v3)
+    assert data["s"]["sample_name"] == ["PH-1", "SITE2"]
+    assert "N10quartz" in data["n"]["nuclide"]
+    assert "N26quartz" in data["n"]["nuclide"]
+
+
+def test_from_csv_full_format_creates_targets():
+    path = _write_tmp(_FULL_CSV)
+    try:
+        wf = ProductionRateWorkflow.from_csv(path)
+    finally:
+        os.unlink(path)
+    assert [t.name for t in wf.targets] == ["PH-1", "SITE2"]
+    assert wf._v3_text is not None
+
+
+def test_from_csv_location_only_no_v3_text():
+    path = _write_tmp(_LOCATION_CSV)
+    try:
+        wf = ProductionRateWorkflow.from_csv(path)
+    finally:
+        os.unlink(path)
+    assert [t.name for t in wf.targets] == ["PH-1", "SITE2"]
+    assert wf._v3_text is None
+
+
+def test_date_all_produces_ages():
+    path = _write_tmp(_FULL_CSV)
+    try:
+        wf = ProductionRateWorkflow.from_csv(path)
+    finally:
+        os.unlink(path)
+    result = wf.date_all()
+    n = result["n"]
+    assert "t_St" in n
+    assert len(n["t_St"]) == 3  # PH-1 Be-10, SITE2 Be-10, SITE2 Al-26
+    # PH-1 Martha's Vineyard: expect ~50 ka St
+    ph1_idx = n["sample_name"].index("PH-1")
+    assert 40000 < n["t_St"][ph1_idx] < 60000
+
+
+def test_date_all_raises_without_nuclide_data():
+    path = _write_tmp(_LOCATION_CSV)
+    try:
+        wf = ProductionRateWorkflow.from_csv(path)
+    finally:
+        os.unlink(path)
+    with pytest.raises(ValueError, match="nuclide"):
+        wf.date_all()
+
+
+def test_csv_to_v3_raises_for_location_only():
+    path = _write_tmp(_LOCATION_CSV)
+    try:
+        with pytest.raises(ValueError, match="nuclide columns"):
+            csv_to_v3(path)
+    finally:
+        os.unlink(path)
