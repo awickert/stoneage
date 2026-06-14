@@ -708,10 +708,14 @@ class ProductionRateWorkflow:
 
         Requires that the workflow was created with from_csv() from a CSV that
         includes nuclide columns (nuclide, mineral, concentration, uncertainty,
-        standard).  Uses the local calibration if available and use_local=True,
-        otherwise falls back to the global default.
+        standard).
 
-        Returns the raw get_ages() result dict.
+        When a local calibration is available (after calling calibrate()), both
+        global-default and locally calibrated ages are printed side by side so
+        the effect of the local production rate is immediately visible.
+
+        Returns the locally calibrated get_ages() result when use_local=True
+        and local data exist, otherwise the global-default result.
         """
         if not self._v3_text:
             raise ValueError(
@@ -720,29 +724,58 @@ class ProductionRateWorkflow:
                 "columns) via from_csv()."
             )
 
-        consts_arg = self._consts if (use_local and self._consts) else None
-        data   = parse_v3_input(self._v3_text)
-        result = get_ages(data, control={"result_type": result_type},
-                          consts=consts_arg)
-        n      = result["n"]
+        has_local = use_local and self._consts is not None
 
-        source_label = (
-            "local calibration" if (use_local and self._consts) else "global default"
-        )
-        print(f"\n  Exposure ages ({source_label}):")
-        print(f"  {'Sample':<16}  {'Nuclide':<14}  "
-              f"{'Scheme':<6}  {'Age (yr)':>10}  {'±int':>8}  {'±ext':>8}")
-        print("  " + "-" * 70)
+        # Always compute global ages
+        result_g = get_ages(parse_v3_input(self._v3_text),
+                            control={"result_type": result_type})
+        n_g = result_g["n"]
 
-        for i, sname in enumerate(n["sample_name"]):
-            nuc = n["nuclide"][i]
-            for sf in ["St", "Lm", "LSDn"]:
-                t_key = f"t_{sf}"
-                if t_key in n and i < len(n[t_key]):
-                    t_age = n[t_key][i]
-                    di    = n[f"delt_int_{sf}"][i]
-                    de    = n[f"delt_ext_{sf}"][i]
-                    print(f"  {sname:<16}  {nuc:<14}  "
-                          f"{sf:<6}  {t_age:>10,.0f}  {di:>8,.0f}  {de:>8,.0f}")
+        if has_local:
+            result_l = get_ages(parse_v3_input(self._v3_text),
+                                control={"result_type": result_type},
+                                consts=self._consts)
+            n_l = result_l["n"]
 
-        return result
+            # Identify local calibration source label
+            local_cals = [c for c in self._cal_results if c.n_sites > 0]
+            cal_label  = local_cals[0].source if local_cals else "local calibration"
+
+            print(f"\n  Exposure ages — global default vs. {cal_label}:")
+            print(f"  {'Sample':<16}  {'Nuclide':<14}  {'Scheme':<6}  "
+                  f"{'Global (yr)':>12}  {'Local (yr)':>11}  {'Shift':>14}")
+            print("  " + "-" * 82)
+
+            for i, sname in enumerate(n_g["sample_name"]):
+                nuc = n_g["nuclide"][i]
+                for sf in ["St", "Lm", "LSDn"]:
+                    t_key = f"t_{sf}"
+                    if t_key in n_g and i < len(n_g[t_key]):
+                        t_g   = n_g[t_key][i]
+                        t_l   = n_l[t_key][i]
+                        shift = t_l - t_g
+                        pct   = 100.0 * shift / t_g if t_g else 0.0
+                        print(f"  {sname:<16}  {nuc:<14}  {sf:<6}  "
+                              f"{t_g:>12,.0f}  {t_l:>11,.0f}  "
+                              f"{shift:>+8,.0f} ({pct:>+.1f}%)")
+
+            return result_l
+
+        else:
+            print(f"\n  Exposure ages (global default):")
+            print(f"  {'Sample':<16}  {'Nuclide':<14}  "
+                  f"{'Scheme':<6}  {'Age (yr)':>10}  {'±int':>8}  {'±ext':>8}")
+            print("  " + "-" * 70)
+
+            for i, sname in enumerate(n_g["sample_name"]):
+                nuc = n_g["nuclide"][i]
+                for sf in ["St", "Lm", "LSDn"]:
+                    t_key = f"t_{sf}"
+                    if t_key in n_g and i < len(n_g[t_key]):
+                        t_age = n_g[t_key][i]
+                        di    = n_g[f"delt_int_{sf}"][i]
+                        de    = n_g[f"delt_ext_{sf}"][i]
+                        print(f"  {sname:<16}  {nuc:<14}  "
+                              f"{sf:<6}  {t_age:>10,.0f}  {di:>8,.0f}  {de:>8,.0f}")
+
+            return result_g
