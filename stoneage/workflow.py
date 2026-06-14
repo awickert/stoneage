@@ -50,9 +50,10 @@ import numpy as np
 warnings.filterwarnings("ignore")
 
 from .atmosphere import ERA40atm, antatm
-from .scaling import stone2000
+from .scaling import stone2000, lm_sf_at, lsdn_sf_at
 from .corrections import thickness, Lsp
 from .constants import make_consts, Constants
+from .cutoff_rigidity import get_DipRc
 from .input_parser import parse_v3_input, csv_to_v3
 from .calculator import get_ages
 
@@ -245,6 +246,7 @@ class ProductionRateWorkflow:
         self._point_results: List[PointResult] = []       # one per (scheme × target)
         self._consts: Optional[Constants] = None
         self._v3_text: Optional[str] = None
+        self._rc_s_cache: List[tuple] = []   # (Rc, S) per target, set in calibrate()
 
     # convenience accessor for single-point workflows
     @property
@@ -343,6 +345,7 @@ class ProductionRateWorkflow:
         wf._consts        = None
         wf._csv_path      = path
         wf._v3_text       = csv_to_v3(path) if has_nuclide else None
+        wf._rc_s_cache    = []
         return wf
 
     # ── Site physics ────────────────────────────────────────────────────────
@@ -367,8 +370,20 @@ class ProductionRateWorkflow:
         return float(antatm([t.elv])[0])
 
     @staticmethod
-    def _scaling_factor(t: TargetSite, pressure: float) -> float:
+    def _scaling_factor_st(t: TargetSite, pressure: float) -> float:
+        """Stone2000 geographic scaling (St scheme)."""
         return float(stone2000([t.lat], [pressure], Fsp=1.0)[0])
+
+    @staticmethod
+    def _current_rc_s(t: TargetSite) -> tuple:
+        """Current-epoch cutoff rigidity and solar modulation at site."""
+        sfdata = get_DipRc({
+            "lat":  np.array([t.lat]),
+            "long": np.array([t.lon]),
+            "t":    np.array([50.0]),
+            "yr":   np.array([float(t.yr)]),
+        })
+        return float(sfdata["Rc"][0][0]), float(sfdata["S"][0][0])
 
     @staticmethod
     def _thickness_correction(t: TargetSite) -> float:
@@ -455,20 +470,33 @@ class ProductionRateWorkflow:
 
     # ── Calibration ──────────────────────────────────────────────────────────
 
-    def _point_production(self, t: TargetSite, cal: CalibrationResult) -> PointResult:
+    def _point_production(self, t: TargetSite, cal: CalibrationResult,
+                          Rc: float, S: float,
+                          nuclide: str = "N10quartz") -> PointResult:
         """Compute production rate components at a single target site.
 
-        P_sp is the spallation rate at the surface with no thickness averaging
-        (P_ref × SF × shield).  This is the value a depth-profile code needs
-        as its surface boundary condition.
+        Uses the scheme-appropriate scaling factor:
+          St   — Stone2000 polynomial (time-independent)
+          Lm   — Lm2015 grid interpolated at current (Rc, pressure)
+          LSDn — LSDn2015 grid: SF = b(p, Rc) + S·m(p, Rc)
 
-        P_local = P_sp × tc + P_mu is the effective rate for a surface sample
-        of finite thickness t.thick with density t.rho.
+        P_sp is the surface spallation rate without thickness averaging
+        (P_ref × SF × shield), in at/g/yr for all three schemes.
+
+        P_local = P_sp × tc + P_mu is the effective rate for a finite-
+        thickness surface sample.
         """
-        P_atm  = self._site_pressure(t)
-        SF     = self._scaling_factor(t, P_atm)
-        tc     = self._thickness_correction(t)
-        P_mu   = self._muon_rate(P_atm)
+        P_atm = self._site_pressure(t)
+        tc    = self._thickness_correction(t)
+        P_mu  = self._muon_rate(P_atm)
+
+        if cal.scheme == "St":
+            SF = self._scaling_factor_st(t, P_atm)
+        elif cal.scheme == "Lm":
+            SF = lm_sf_at(P_atm, Rc)
+        else:  # LSDn
+            SF = lsdn_sf_at(P_atm, Rc, S, nuclide)
+
         P_sp   = cal.P_ref_SLHL * SF * t.shield
         P_loc  = P_sp * tc + P_mu
         dP_loc = cal.dP_ref * SF * tc * t.shield
@@ -501,6 +529,9 @@ class ProductionRateWorkflow:
             ("LSDn", "refP_LSDn", "delrefP_LSDn"),
         ]
 
+        # Precompute current Rc and S for each target (used by Lm and LSDn)
+        self._rc_s_cache = [self._current_rc_s(t) for t in self.targets]
+
         # ── Global defaults ──────────────────────────────────────────────────
         if include_global:
             for sf_name, ref_key, dref_key in scheme_keys:
@@ -511,8 +542,10 @@ class ProductionRateWorkflow:
                     source     = "global default (Borchers et al. 2016)",
                 )
                 self._cal_results.append(cal)
-                for t in self.targets:
-                    self._point_results.append(self._point_production(t, cal))
+                for t, (Rc, S) in zip(self.targets, self._rc_s_cache):
+                    self._point_results.append(
+                        self._point_production(t, cal, Rc, S)
+                    )
 
         # ── Local calibration from selected ICE-D samples ───────────────────
         if self._selected:
@@ -547,8 +580,10 @@ class ProductionRateWorkflow:
                     chi2_p=p_chi2,
                 )
                 self._cal_results.append(cal)
-                for t in self.targets:
-                    self._point_results.append(self._point_production(t, cal))
+                for t, (Rc, S) in zip(self.targets, self._rc_s_cache):
+                    self._point_results.append(
+                        self._point_production(t, cal, Rc, S)
+                    )
 
                 # store for optional dating
                 getattr(local_consts, ref_key)[idx] = float(P_ref)
@@ -582,7 +617,7 @@ class ProductionRateWorkflow:
             print(f"    {'Scheme':<6}  {'P_ref at SLHL':>16}  Unit")
             print("    " + "-" * 36)
             for c in cals:
-                unit = "dimensionless" if c.scheme == "LSDn" else "at/g/yr"
+                unit = "at/g/yr" if c.scheme in ("St", "Lm") else "(LSDn grid units)"
                 print(f"    {c.scheme:<6}  "
                       f"{c.P_ref_SLHL:.4f} ± {c.dP_ref:.4f}  {unit}")
             print()
@@ -595,7 +630,7 @@ class ProductionRateWorkflow:
             if multi:
                 for sf in ["St", "Lm", "LSDn"]:
                     sf_pts = [p for p in pts if p.scheme == sf]
-                    unit = "(d'less)" if sf == "LSDn" else "(at/g/yr)"
+                    unit = "(at/g/yr)"
                     print(f"    ── {sf} {unit} " + "─" * 44)
                     print(f"    {'Site':<16}  {'Elv(m)':>6}  "
                           f"{'SF':>7}  {'P_sp':>9}  {'P_mu':>7}  "
@@ -616,14 +651,15 @@ class ProductionRateWorkflow:
                       f"{'P_mu':>8}  {'tc':>6}  {'P_total':>10}  {'±':>8}  Unit")
                 print("    " + "-" * 68)
                 for p in pts:
-                    unit = "dim'less" if p.scheme == "LSDn" else "at/g/yr"
+                    unit = "at/g/yr"
                     print(f"    {p.scheme:<6}  {p.SF:>7.4f}  {p.P_sp:>10.4f}  "
                           f"{p.P_mu:>8.4f}  {p.tc:>6.4f}  {p.P_local:>10.4f}  "
                           f"{p.dP_local:>8.4f}  {unit}")
                 print()
                 print(f"    P_sp = P_ref × SF × shielding  (surface rate; use for depth profiles)")
                 print(f"    P_total = P_sp × tc + P_mu     (rate averaged over sample thickness)")
-                print(f"    For depth profiles use St or Lm (at/g/yr); LSDn P_sp is dimensionless.")
+                print(f"    All P_sp values are in at/g/yr.  For depth profiles St or Lm are"
+                      f" recommended;\n    LSDn P_sp uses the proper LSDn grid SF, not Stone2000.")
             print()
 
         # ── Global vs local comparison ───────────────────────────────────────
@@ -799,3 +835,115 @@ class ProductionRateWorkflow:
                               f"{sf:<6}  {t_age:>10,.0f}  {di:>8,.0f}  {de:>8,.0f}")
 
             return result_g
+
+    # ── Production rate time series ──────────────────────────────────────────
+
+    def production_timeseries(self, t_ka: float = 14.0,
+                               nuclide: str = "N10quartz",
+                               target_idx: int = 0) -> dict:
+        """
+        Compute spallation production rate P_sp(t) vs. time for Lm and LSDn.
+
+        Both schemes are time-dependent because they track the paleomagnetic
+        cutoff rigidity Rc(t).  St is time-independent (shown as a constant
+        for comparison).  P_mu is also constant here (simplified exponential
+        model).
+
+        Parameters
+        ----------
+        t_ka       : float
+            Duration of the time series in ka before sample collection.
+            Default 14 ka covers the full available paleomagnetic record.
+        nuclide    : str
+            Nuclide code for the LSDn grid lookup (default "N10quartz").
+        target_idx : int
+            Which target site to use when there are multiple (default 0).
+
+        Returns
+        -------
+        dict with keys
+            "t_ka"   : 1-D array, time-step midpoints in ka before collection
+            "dt_ka"  : 1-D array, time-step widths in ka
+            "Rc"     : 1-D array, cutoff rigidity (GV) at each time step
+            "S"      : 1-D array, solar modulation (sfu) at each time step
+            "St"     : 1-D array, P_sp in at/g/yr (constant)
+            "Lm"     : 1-D array, P_sp in at/g/yr (time-varying)
+            "LSDn"   : 1-D array, P_sp in at/g/yr (time-varying)
+            "P_mu"   : float, muon surface production rate (at/g/yr)
+            "target" : TargetSite used
+        """
+        if not self._cal_results:
+            raise RuntimeError("Call calibrate() before production_timeseries().")
+
+        t = self.targets[target_idx]
+        P_atm = self._site_pressure(t)
+        P_mu  = self._muon_rate(P_atm)
+
+        # Get P_ref per scheme from calibrated (or global) results
+        # Prefer local calibration over global when both present
+        def _pref(scheme):
+            local = [c for c in self._cal_results
+                     if c.scheme == scheme and c.n_sites > 0]
+            if local:
+                return local[0].P_ref_SLHL
+            glob = [c for c in self._cal_results
+                    if c.scheme == scheme and c.n_sites == 0]
+            return glob[0].P_ref_SLHL if glob else None
+
+        P_ref_St   = _pref("St")
+        P_ref_Lm   = _pref("Lm")
+        P_ref_LSDn = _pref("LSDn")
+
+        # Build sfdata for the full time range
+        sfdata = get_DipRc({
+            "lat":  np.array([t.lat]),
+            "long": np.array([t.lon]),
+            "t":    np.array([t_ka * 1000.0]),
+            "yr":   np.array([float(t.yr)]),
+        })
+        sfdata["pressure"] = np.array([P_atm])
+        sfdata["nuclide"]  = [nuclide]
+
+        from .scaling import get_LmSF, get_LSDnSF
+        sfdata = get_LmSF(sfdata)
+        sfdata = get_LSDnSF(sfdata)
+
+        tmin  = sfdata["tmin"][0]
+        tmax  = sfdata["tmax"][0]
+        Rc_ts = sfdata["Rc"][0]
+        S_ts  = sfdata["S"][0]
+        SF_lm  = sfdata["Lm"][0]
+        SF_lsdn = sfdata["LSDn"][0]
+
+        t_mid = (tmin + tmax) / 2.0 / 1000.0   # ka
+        dt    = (tmax - tmin) / 1000.0          # ka
+
+        SF_st = self._scaling_factor_st(t, P_atm)
+
+        P_St   = np.full(len(t_mid), P_ref_St   * SF_st    * t.shield) if P_ref_St   else None
+        P_Lm   = P_ref_Lm   * SF_lm   * t.shield if P_ref_Lm   else None
+        P_LSDn = P_ref_LSDn * SF_lsdn * t.shield if P_ref_LSDn else None
+
+        print(f"\n  Production rate time series — {t.name}")
+        print(f"  Nuclide: {nuclide}  |  Site: {t.lat:.3f}°N "
+              f"{t.lon:.3f}°E  {t.elv:.0f} m")
+        print(f"  Time range: 0 – {t_ka:.1f} ka  |  {len(t_mid)} time steps")
+        if P_St is not None and P_Lm is not None and P_LSDn is not None:
+            print(f"\n  {'Time (ka)':>10}  {'Rc (GV)':>8}  "
+                  f"{'St':>9}  {'Lm':>9}  {'LSDn':>9}  at/g/yr")
+            print("  " + "-" * 56)
+            for i in range(len(t_mid)):
+                print(f"  {t_mid[i]:>10.3f}  {Rc_ts[i]:>8.4f}  "
+                      f"{P_St[i]:>9.4f}  {P_Lm[i]:>9.4f}  {P_LSDn[i]:>9.4f}")
+
+        return {
+            "t_ka":   t_mid,
+            "dt_ka":  dt,
+            "Rc":     Rc_ts,
+            "S":      S_ts,
+            "St":     P_St,
+            "Lm":     P_Lm,
+            "LSDn":   P_LSDn,
+            "P_mu":   P_mu,
+            "target": t,
+        }

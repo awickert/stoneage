@@ -159,6 +159,70 @@ def get_LmSF(sfdata: dict) -> dict:
     return sfdata
 
 
+def lm_sf_at(p: float, Rc: float) -> float:
+    """
+    Lm scaling factor at a single (pressure, cutoff rigidity) point.
+
+    Wraps the Lm2015 grid interpolator for use outside the time-step loop.
+
+    Parameters
+    ----------
+    p   : atmospheric pressure (hPa)
+    Rc  : geomagnetic cutoff rigidity (GV)
+
+    Returns
+    -------
+    Dimensionless Lm scaling factor.
+    """
+    lm  = _load_lm()
+    il  = scipy.interpolate.RegularGridInterpolator(
+        (lm["p"], lm["Rc"]), lm["sf"],
+        method="linear", bounds_error=False, fill_value=None,
+    )
+    p_c  = float(np.clip(p,  lm["p"].min(),  lm["p"].max()))
+    Rc_c = float(np.clip(Rc, lm["Rc"].min(), 20.0))
+    return float(il(np.array([[p_c, Rc_c]]))[0])
+
+
+def lsdn_sf_at(p: float, Rc: float, S: float,
+               nuclide: str = "N10quartz") -> float:
+    """
+    LSDn scaling factor at a single (pressure, cutoff rigidity, solar
+    modulation) point.
+
+    SF = b(p, Rc) + S · m(p, Rc)
+
+    where b and m are interpolated from the LSDn2015 grid and S is the
+    solar modulation parameter (≈ 460 sfu for the long-term mean,
+    ≈ 620 sfu for the modern solar cycle).
+
+    Parameters
+    ----------
+    p       : atmospheric pressure (hPa)
+    Rc      : geomagnetic cutoff rigidity (GV)
+    S       : solar modulation parameter (sfu)
+    nuclide : nuclide code, e.g. "N10quartz"
+
+    Returns
+    -------
+    float — LSDn scaling factor in the same (absolute) units as the grid,
+    such that P_ref_LSDn × lsdn_sf_at(…) gives at/g/yr.
+    """
+    d    = _load_lsdn(nuclide)
+    p_c  = float(np.clip(p,  d["p"].min(),  d["p"].max()))
+    Rc_c = float(np.clip(Rc, d["Rc"].min(), 20.0))
+    pts  = np.array([[p_c, Rc_c]])
+    ib   = scipy.interpolate.RegularGridInterpolator(
+        (d["p"], d["Rc"]), d["b"],
+        method="linear", bounds_error=False, fill_value=None,
+    )
+    im   = scipy.interpolate.RegularGridInterpolator(
+        (d["p"], d["Rc"]), d["m"],
+        method="linear", bounds_error=False, fill_value=None,
+    )
+    return float(ib(pts)[0]) + S * float(im(pts)[0])
+
+
 def get_LSDnSF(sfdata: dict) -> dict:
     """
     Interpolate LSDn (Lifton/Sato/Dunai) scaling factors.

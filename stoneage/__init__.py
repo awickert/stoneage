@@ -8,7 +8,7 @@ Original author: Greg Balco, Berkeley Geochronology Center (balcs@bgc.org)
 from .constants import make_consts
 from .workflow import ProductionRateWorkflow
 from .atmosphere import ERA40atm, antatm
-from .scaling import stone2000, get_LmSF, get_LSDnSF
+from .scaling import stone2000, get_LmSF, get_LSDnSF, lm_sf_at, lsdn_sf_at
 from .corrections import thickness, Lsp
 from .cutoff_rigidity import get_DipRc
 from .calculator import get_ages
@@ -23,6 +23,8 @@ __all__ = [
     "stone2000",
     "get_LmSF",
     "get_LSDnSF",
+    "lm_sf_at",
+    "lsdn_sf_at",
     "thickness",
     "Lsp",
     "get_DipRc",
