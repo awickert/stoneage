@@ -1,0 +1,2 @@
+name,lat,lon,elevation,elv_flag,thickness,density,shielding,erosion,year,nuclide,mineral,concentration,uncertainty,standard
+PH-1,41.1,-70.8,22,std,2.5,2.65,0.98,0.0,2005,Be-10,quartz,188200,3400,07KNSTD

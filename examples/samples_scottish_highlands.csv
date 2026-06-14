@@ -1,0 +1,3 @@
+name,lat,lon,elevation,elv_flag,thickness,density,shielding,erosion,year,nuclide,mineral,concentration,uncertainty,standard
+NEW-A,56.8,-4.9,590,std,3.0,2.65,1.0,0.0,2020,Be-10,quartz,85000,2550,07KNSTD
+NEW-B,56.7,-5.0,615,std,2.0,2.65,1.0,0.0,2020,Be-10,quartz,110000,3300,07KNSTD
