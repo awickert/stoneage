@@ -203,3 +203,80 @@ class TestAngdistr:
         """Two points 90° apart on the equator."""
         theta = _angdistr(0.0, 0.0, 0.0, np.pi / 2)
         assert abs(theta - np.pi / 2) < 1e-10
+
+
+# ---------------------------------------------------------------------------
+# PointResult: P_sp / P_mu breakdown
+# ---------------------------------------------------------------------------
+
+from stoneage.workflow import ProductionRateWorkflow
+from stoneage.corrections import Lsp
+
+
+class TestProductionRateBreakdown:
+    """P_sp and P_mu are stored separately and combine correctly."""
+
+    def _make_wf(self, lat=41.1, lon=-70.8, elv=22,
+                 thick=2.5, rho=2.65, shield=1.0):
+        wf = ProductionRateWorkflow(lat=lat, lon=lon, elv=elv,
+                                    thick=thick, rho=rho, shield=shield)
+        wf.calibrate(include_global=True)
+        return wf
+
+    def test_p_sp_stored_in_point_result(self):
+        wf = self._make_wf()
+        for p in wf._point_results:
+            assert hasattr(p, "P_sp")
+            assert p.P_sp > 0
+
+    def test_p_sp_plus_p_mu_equals_p_local(self):
+        """P_sp × tc + P_mu must exactly equal P_local."""
+        wf = self._make_wf()
+        for p in wf._point_results:
+            expected = p.P_sp * p.tc + p.P_mu
+            assert abs(p.P_local - expected) < 1e-10, (
+                f"{p.scheme}: P_sp×tc+P_mu={expected:.6f} ≠ P_local={p.P_local:.6f}"
+            )
+
+    def test_p_mu_positive_and_smaller_than_p_sp(self):
+        """Muon production is positive but much smaller than spallation."""
+        wf = self._make_wf()
+        for p in wf._point_results:
+            assert p.P_mu > 0
+            assert p.P_mu < p.P_sp
+
+    def test_shielding_scales_p_sp_not_p_mu(self):
+        """Topographic shielding reduces P_sp; P_mu is unaffected."""
+        wf_full   = self._make_wf(shield=1.0)
+        wf_shield = self._make_wf(shield=0.8)
+        for sf in ["St", "Lm", "LSDn"]:
+            p1 = next(p for p in wf_full._point_results   if p.scheme == sf)
+            p2 = next(p for p in wf_shield._point_results if p.scheme == sf)
+            assert abs(p2.P_mu - p1.P_mu) < 1e-10, "P_mu should be unaffected by shielding"
+            assert abs(p2.P_sp / p1.P_sp - 0.8) < 1e-8, "P_sp should scale with shielding"
+
+    def test_thick_sample_reduces_p_local_not_p_sp(self):
+        """A thicker sample has a lower tc and lower P_local, but same P_sp."""
+        wf_thin  = self._make_wf(thick=1.0)
+        wf_thick = self._make_wf(thick=5.0)
+        for sf in ["St", "Lm", "LSDn"]:
+            p_thin  = next(p for p in wf_thin._point_results  if p.scheme == sf)
+            p_thick = next(p for p in wf_thick._point_results if p.scheme == sf)
+            assert abs(p_thin.P_sp - p_thick.P_sp) < 1e-8, \
+                "P_sp should be independent of sample thickness"
+            assert p_thick.tc < p_thin.tc
+            assert p_thick.P_local < p_thin.P_local
+
+    def test_report_contains_lsp(self, capsys):
+        """report() must print the spallation attenuation length."""
+        wf = self._make_wf()
+        wf.report()
+        out = capsys.readouterr().out
+        assert "160.0 g/cm²" in out
+
+    def test_report_contains_p_sp_p_mu_headers(self, capsys):
+        wf = self._make_wf()
+        wf.report()
+        out = capsys.readouterr().out
+        assert "P_sp" in out
+        assert "P_mu" in out

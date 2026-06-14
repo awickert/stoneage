@@ -123,9 +123,10 @@ class PointResult:
     elv: float
     scheme: str
     SF: float           # Stone2000 (or LSDn) scaling factor at this point
-    tc: float           # thickness correction
-    P_mu: float         # muon production rate
-    P_local: float      # total local production rate
+    tc: float           # thickness correction (< 1 for finite-thickness samples)
+    P_sp: float         # spallation surface production rate (P_ref × SF × shield, no tc)
+    P_mu: float         # muon surface production rate
+    P_local: float      # total surface production rate for a sample: P_sp×tc + P_mu
     dP_local: float     # uncertainty from P_ref only
     source: str         # same as CalibrationResult.source
 
@@ -455,16 +456,26 @@ class ProductionRateWorkflow:
     # ── Calibration ──────────────────────────────────────────────────────────
 
     def _point_production(self, t: TargetSite, cal: CalibrationResult) -> PointResult:
-        """Compute P_local at a single target given an already-calibrated P_ref."""
-        P_atm = self._site_pressure(t)
-        SF    = self._scaling_factor(t, P_atm)
-        tc    = self._thickness_correction(t)
-        P_mu  = self._muon_rate(P_atm)
-        P_loc = cal.P_ref_SLHL * SF * tc * t.shield + P_mu
-        dP_loc = cal.dP_ref    * SF * tc * t.shield
+        """Compute production rate components at a single target site.
+
+        P_sp is the spallation rate at the surface with no thickness averaging
+        (P_ref × SF × shield).  This is the value a depth-profile code needs
+        as its surface boundary condition.
+
+        P_local = P_sp × tc + P_mu is the effective rate for a surface sample
+        of finite thickness t.thick with density t.rho.
+        """
+        P_atm  = self._site_pressure(t)
+        SF     = self._scaling_factor(t, P_atm)
+        tc     = self._thickness_correction(t)
+        P_mu   = self._muon_rate(P_atm)
+        P_sp   = cal.P_ref_SLHL * SF * t.shield
+        P_loc  = P_sp * tc + P_mu
+        dP_loc = cal.dP_ref * SF * tc * t.shield
         return PointResult(
             target_name=t.name, lat=t.lat, lon=t.lon, elv=t.elv,
-            scheme=cal.scheme, SF=SF, tc=tc, P_mu=P_mu,
+            scheme=cal.scheme, SF=SF, tc=tc,
+            P_sp=P_sp, P_mu=P_mu,
             P_local=P_loc, dP_local=dP_loc, source=cal.source,
         )
 
@@ -577,33 +588,42 @@ class ProductionRateWorkflow:
             print()
 
         # ── Per-point local production rates ─────────────────────────────────
+        lsp_val = float(Lsp())
         for source in sources:
             pts = [p for p in self._point_results if p.source == source]
             print(f"  Local production rates — {source}")
             if multi:
-                hdr = (f"    {'Site':<16}  {'Elv(m)':>6}  "
-                       f"{'SF':>7}  {'P_local':>9}  {'±':>7}  Scheme")
-                print(hdr)
-                print("    " + "-" * 62)
                 for sf in ["St", "Lm", "LSDn"]:
                     sf_pts = [p for p in pts if p.scheme == sf]
                     unit = "(d'less)" if sf == "LSDn" else "(at/g/yr)"
-                    print(f"    ── {sf} {unit} " + "─" * 30)
+                    print(f"    ── {sf} {unit} " + "─" * 44)
+                    print(f"    {'Site':<16}  {'Elv(m)':>6}  "
+                          f"{'SF':>7}  {'P_sp':>9}  {'P_mu':>7}  "
+                          f"{'tc':>6}  {'P_total':>9}  {'±':>7}")
+                    print("    " + "-" * 76)
                     for p in sf_pts:
                         print(f"    {p.target_name:<16}  {p.elv:>6.0f}  "
-                              f"{p.SF:>7.4f}  {p.P_local:>9.4f}  "
-                              f"{p.dP_local:>7.4f}")
+                              f"{p.SF:>7.4f}  {p.P_sp:>9.4f}  {p.P_mu:>7.4f}  "
+                              f"{p.tc:>6.4f}  {p.P_local:>9.4f}  {p.dP_local:>7.4f}")
             else:
                 t = self.targets[0]
                 P_atm_val = self._site_pressure(t)
                 print(f"    Location: {t.lat:.4f}°N, {t.lon:.4f}°W, {t.elv:.0f} m")
                 print(f"    ERA-40 pressure: {P_atm_val:.2f} hPa")
-                print(f"    {'Scheme':<6}  {'SF':>7}  {'P_local':>10}  {'±':>8}  Unit")
-                print("    " + "-" * 46)
+                print(f"    Λsp (spallation attenuation length): {lsp_val:.1f} g/cm²")
+                print()
+                print(f"    {'Scheme':<6}  {'SF':>7}  {'P_sp':>10}  "
+                      f"{'P_mu':>8}  {'tc':>6}  {'P_total':>10}  {'±':>8}  Unit")
+                print("    " + "-" * 68)
                 for p in pts:
                     unit = "dim'less" if p.scheme == "LSDn" else "at/g/yr"
-                    print(f"    {p.scheme:<6}  {p.SF:>7.4f}  "
-                          f"{p.P_local:>10.4f}  {p.dP_local:>8.4f}  {unit}")
+                    print(f"    {p.scheme:<6}  {p.SF:>7.4f}  {p.P_sp:>10.4f}  "
+                          f"{p.P_mu:>8.4f}  {p.tc:>6.4f}  {p.P_local:>10.4f}  "
+                          f"{p.dP_local:>8.4f}  {unit}")
+                print()
+                print(f"    P_sp = P_ref × SF × shielding  (surface rate; use for depth profiles)")
+                print(f"    P_total = P_sp × tc + P_mu     (rate averaged over sample thickness)")
+                print(f"    For depth profiles use St or Lm (at/g/yr); LSDn P_sp is dimensionless.")
             print()
 
         # ── Global vs local comparison ───────────────────────────────────────
