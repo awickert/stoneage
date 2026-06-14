@@ -20,15 +20,21 @@ Quick start
     # From a single point
     wf = ProductionRateWorkflow(lat=46.2, lon=-91.8, elv=183)
 
-    # Or from a CSV with columns  name, lat, lon, elevation
+    # From a location-only CSV (name, lat, lon, elevation)
     wf = ProductionRateWorkflow.from_csv("sites.csv")
+
+    # Or from a full v3-field CSV (adds nuclide, mineral, concentration, …)
+    wf = ProductionRateWorkflow.from_csv("samples_with_measurements.csv")
 
     wf.find_calibration_data()   # fetch ICE-D, rank by distance
     wf.calibrate()               # compute local production rates
     wf.report()                  # print transparent summary
 
-    # Optional dating
+    # Optional dating (single sample, manual nuclide line)
     wf.date("SITE Be-10 quartz 60000 1800 07KNSTD;")
+
+    # Dating all samples loaded from a full CSV
+    wf.date_all()
 """
 
 import math
@@ -47,7 +53,7 @@ from .atmosphere import ERA40atm, antatm
 from .scaling import stone2000
 from .corrections import thickness, Lsp
 from .constants import make_consts, Constants
-from .input_parser import parse_v3_input
+from .input_parser import parse_v3_input, csv_to_v3
 from .calculator import get_ages
 
 
@@ -237,6 +243,7 @@ class ProductionRateWorkflow:
         self._cal_results: List[CalibrationResult] = []   # one per scheme
         self._point_results: List[PointResult] = []       # one per (scheme × target)
         self._consts: Optional[Constants] = None
+        self._v3_text: Optional[str] = None
 
     # convenience accessor for single-point workflows
     @property
@@ -249,42 +256,73 @@ class ProductionRateWorkflow:
         """
         Create from a CSV file.
 
-        The CSV must have columns: name, lat, lon, elevation
-        Optional columns: thickness, density, shielding, erosion, year
+        Accepts two formats:
+
+        **Location-only CSV** (columns: name, lat, lon, elevation; optional:
+        elv_flag, thickness, density, shielding, erosion, year):
+            Use for production-rate estimation before samples are measured.
+
+        **Full v3-field CSV** (adds: nuclide, mineral, concentration, uncertainty,
+        standard; He-3/Ne-21 also need standard_value):
+            Use when samples are already measured. Enables date_all() for
+            computing exposure ages directly from the CSV.
+
+        Multiple rows sharing the same sample name are treated as one sample
+        with multiple nuclide measurements (dual-nuclide samples).
 
         Parameters
         ----------
         use_centroid : bool
             If True, compute one production rate at the geographic centroid
-            of all points.  Default False: compute per point (recommended
-            when samples span different elevations or latitudes).
+            of all points.  Default False: compute per point.
         """
-        import csv
+        import csv as csv_mod
         rows = []
         with open(path) as f:
-            reader = csv.DictReader(f)
+            reader = csv_mod.DictReader(f)
             for row in reader:
                 rows.append(row)
         if not rows:
             raise ValueError(f"No data rows in {path}")
 
+        # Detect full-format CSV (has nuclide columns with data)
+        has_nuclide = (
+            "nuclide" in rows[0]
+            and any(r.get("nuclide", "").strip() for r in rows)
+        )
+
+        def _flt(r, key, default):
+            v = r.get(key, "")
+            return float(v) if str(v).strip() else float(default)
+
         def _site(r):
             return TargetSite(
-                name      = r["name"],
-                lat       = float(r["lat"]),
-                lon       = float(r["lon"]),
-                elv       = float(r["elevation"]),
-                thick     = float(r.get("thickness", 2.0)),
-                rho       = float(r.get("density",   2.65)),
-                shield    = float(r.get("shielding", 1.0)),
-                erosion   = float(r.get("erosion",   0.0)),
-                yr        = int(r.get("year", 2010)),
+                name    = r["name"].strip(),
+                lat     = float(r["lat"]),
+                lon     = float(r["lon"]),
+                elv     = float(r["elevation"]),
+                thick   = _flt(r, "thickness", 2.0),
+                rho     = _flt(r, "density",   2.65),
+                shield  = _flt(r, "shielding", 1.0),
+                erosion = _flt(r, "erosion",   0.0),
+                yr      = int(_flt(r, "year", 2010)),
             )
 
+        # Deduplicate: one TargetSite per unique sample name
+        seen: dict = {}
+        unique_rows = []
+        for r in rows:
+            name = r["name"].strip()
+            if name not in seen:
+                seen[name] = r
+                unique_rows.append(r)
+
+        wf = cls.__new__(cls)
+
         if use_centroid:
-            lats = [float(r["lat"])       for r in rows]
-            lons = [float(r["lon"])       for r in rows]
-            elvs = [float(r["elevation"]) for r in rows]
+            lats = [float(r["lat"])       for r in unique_rows]
+            lons = [float(r["lon"])       for r in unique_rows]
+            elvs = [float(r["elevation"]) for r in unique_rows]
             centroid = TargetSite(
                 name=Path(path).stem + "_centroid",
                 lat=float(np.mean(lats)),
@@ -293,11 +331,9 @@ class ProductionRateWorkflow:
                 **{k: v for k, v in kwargs.items()
                    if k in ("thick","rho","shield","erosion","yr")},
             )
-            wf = cls.__new__(cls)
             wf.targets = [centroid]
         else:
-            wf = cls.__new__(cls)
-            wf.targets = [_site(r) for r in rows]
+            wf.targets = [_site(r) for r in unique_rows]
 
         wf._cal_samples   = []
         wf._selected      = []
@@ -305,6 +341,7 @@ class ProductionRateWorkflow:
         wf._point_results = []
         wf._consts        = None
         wf._csv_path      = path
+        wf._v3_text       = csv_to_v3(path) if has_nuclide else None
         return wf
 
     # ── Site physics ────────────────────────────────────────────────────────
@@ -662,4 +699,50 @@ class ProductionRateWorkflow:
                 di    = n[f"delt_int_{sf}"][0]
                 de    = n[f"delt_ext_{sf}"][0]
                 print(f"  {sf:<6}  {t_age:>10,.0f}  {di:>8,.0f}  {de:>8,.0f}")
+        return result
+
+    def date_all(self, use_local: bool = True,
+                 result_type: str = "long") -> dict:
+        """
+        Date all samples loaded from a full v3-field CSV.
+
+        Requires that the workflow was created with from_csv() from a CSV that
+        includes nuclide columns (nuclide, mineral, concentration, uncertainty,
+        standard).  Uses the local calibration if available and use_local=True,
+        otherwise falls back to the global default.
+
+        Returns the raw get_ages() result dict.
+        """
+        if not self._v3_text:
+            raise ValueError(
+                "No nuclide data available. Load a full v3-field CSV "
+                "(with nuclide, mineral, concentration, uncertainty, standard "
+                "columns) via from_csv()."
+            )
+
+        consts_arg = self._consts if (use_local and self._consts) else None
+        data   = parse_v3_input(self._v3_text)
+        result = get_ages(data, control={"result_type": result_type},
+                          consts=consts_arg)
+        n      = result["n"]
+
+        source_label = (
+            "local calibration" if (use_local and self._consts) else "global default"
+        )
+        print(f"\n  Exposure ages ({source_label}):")
+        print(f"  {'Sample':<16}  {'Nuclide':<14}  "
+              f"{'Scheme':<6}  {'Age (yr)':>10}  {'±int':>8}  {'±ext':>8}")
+        print("  " + "-" * 70)
+
+        for i, sname in enumerate(n["sample_name"]):
+            nuc = n["nuclide"][i]
+            for sf in ["St", "Lm", "LSDn"]:
+                t_key = f"t_{sf}"
+                if t_key in n and i < len(n[t_key]):
+                    t_age = n[t_key][i]
+                    di    = n[f"delt_int_{sf}"][i]
+                    de    = n[f"delt_ext_{sf}"][i]
+                    print(f"  {sname:<16}  {nuc:<14}  "
+                          f"{sf:<6}  {t_age:>10,.0f}  {di:>8,.0f}  {de:>8,.0f}")
+
         return result

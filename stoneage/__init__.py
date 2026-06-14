@@ -12,7 +12,7 @@ from .scaling import stone2000, get_LmSF, get_LSDnSF
 from .corrections import thickness, Lsp
 from .cutoff_rigidity import get_DipRc
 from .calculator import get_ages
-from .input_parser import parse_v3_input
+from .input_parser import parse_v3_input, csv_to_v3
 from .summarize import summarize_ages
 
 __version__ = "3.0.2"
@@ -28,5 +28,6 @@ __all__ = [
     "get_DipRc",
     "get_ages",
     "parse_v3_input",
+    "csv_to_v3",
     "summarize_ages",
 ]

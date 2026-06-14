@@ -333,3 +333,114 @@ def _get_cf(std_name, std_names, std_cfs, nuclide, line_no):
     except ValueError:
         raise ValueError(f"Unknown {nuclide} standard '{std_name}' on line {line_no}.")
     return std_cfs[idx]
+
+
+# ---------------------------------------------------------------------------
+# CSV → v3 conversion
+# ---------------------------------------------------------------------------
+
+def csv_to_v3(path: str) -> str:
+    """
+    Convert a v3-field CSV to a v3 text block accepted by parse_v3_input().
+
+    Required columns
+    ----------------
+    name, lat, lon, elevation
+
+    Optional location columns (defaults shown)
+    ------------------------------------------
+    elv_flag     std | ant | pre    (default: std)
+    thickness    cm                 (default: 2.0)
+    density      g/cm³              (default: 2.65)
+    shielding    0–1                (default: 1.0)
+    erosion      cm/yr              (default: 0.0)
+    year         collection year   (default: 0 → uses consts.default_yr)
+
+    Optional nuclide columns (omit for production-rate-only workflow)
+    -----------------------------------------------------------------
+    nuclide      Be-10 | Al-26 | He-3 | Ne-21 | C-14
+    mineral      quartz | pyroxene | olivine
+    concentration  atoms/g
+    uncertainty    atoms/g
+    standard       standard name (e.g. 07KNSTD, KNSTD, CRONUS-P, NONE)
+    standard_value measured standard concentration (He-3/Ne-21 only)
+
+    Multiple rows with the same sample name are collapsed into one v3 sample
+    block with multiple nuclide lines (used for dual-nuclide samples).
+    """
+    import csv
+    from collections import OrderedDict
+
+    rows = []
+    with open(path) as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            rows.append(row)
+    if not rows:
+        raise ValueError(f"No data rows in {path}")
+
+    has_nuclide = "nuclide" in rows[0] and any(r.get("nuclide", "").strip() for r in rows)
+    if not has_nuclide:
+        raise ValueError(
+            "csv_to_v3() requires nuclide columns (nuclide, mineral, concentration, "
+            "uncertainty, standard). For location-only CSVs use from_csv() directly."
+        )
+
+    # Group rows by sample name, preserving insertion order
+    samples: "OrderedDict[str, dict]" = OrderedDict()
+    for r in rows:
+        name = r["name"].strip()
+        if name not in samples:
+            samples[name] = {"info": r, "nuclide_rows": []}
+        if r.get("nuclide", "").strip():
+            samples[name]["nuclide_rows"].append(r)
+
+    lines = []
+    for name, data in samples.items():
+        r = data["info"]
+
+        def _get(key, default):
+            v = r.get(key, default)
+            return str(v).strip() if v is not None and str(v).strip() else str(default)
+
+        lat      = _get("lat", "")
+        lon      = _get("lon", "")
+        elv      = _get("elevation", "")
+        elv_flag = _get("elv_flag", "std")
+        thick    = _get("thickness", "2.0")
+        density  = _get("density", "2.65")
+        shield   = _get("shielding", "1.0")
+        erosion  = _get("erosion", "0.0")
+        year     = _get("year", "0")
+
+        lines.append(
+            f"{name} {lat} {lon} {elv} {elv_flag} "
+            f"{thick} {density} {shield} {erosion} {year};"
+        )
+
+        for nr in data["nuclide_rows"]:
+            nuclide = nr.get("nuclide", "").strip()
+            mineral = nr.get("mineral", "").strip()
+            conc    = nr.get("concentration", "").strip()
+            uncert  = nr.get("uncertainty", "").strip()
+            std     = nr.get("standard", "NONE").strip() or "NONE"
+
+            if nuclide in ("Be-10", "Al-26"):
+                lines.append(f"{name} {nuclide} {mineral} {conc} {uncert} {std};")
+            elif nuclide in ("He-3", "Ne-21"):
+                std_val = nr.get("standard_value", "").strip()
+                if not std_val:
+                    raise ValueError(
+                        f"He-3/Ne-21 row for sample '{name}' requires a "
+                        f"'standard_value' column (measured standard concentration)."
+                    )
+                lines.append(f"{name} {nuclide} {mineral} {conc} {uncert} {std} {std_val};")
+            elif nuclide == "C-14":
+                lines.append(f"{name} {nuclide} {mineral} {conc} {uncert};")
+            else:
+                raise ValueError(
+                    f"Unrecognized nuclide '{nuclide}' for sample '{name}'. "
+                    f"Expected one of: Be-10, Al-26, He-3, Ne-21, C-14."
+                )
+
+    return "\n".join(lines)
