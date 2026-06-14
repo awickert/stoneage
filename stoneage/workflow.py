@@ -107,7 +107,8 @@ class CalibrationSite:
 class CalibrationResult:
     """Scheme-level reference production rate — one per scaling scheme."""
     scheme: str
-    P_ref_SLHL: float   # at/g/yr for St/Lm; dimensionless for LSDn
+    P_ref_SLHL: float   # at/g/yr for St/Lm; LSDn grid units for LSDn
+                        # (P_ref_LSDn × SF_LSDn_grid gives at/g/yr)
     dP_ref: float
     source: str         # "global default" or "ICE-D local (N sites, X km)"
     n_sites: int = 0
@@ -123,7 +124,10 @@ class PointResult:
     lon: float
     elv: float
     scheme: str
-    SF: float           # Stone2000 (or LSDn) scaling factor at this point
+    SF: float           # scheme-appropriate scaling factor (dimensionless):
+                        #   St → Stone2000 polynomial (~1 at SLHL)
+                        #   Lm → Lm2015 grid (~1 at SLHL)
+                        #   LSDn → LSDn2015 grid (~4.7–5 at SLHL)
     tc: float           # thickness correction (< 1 for finite-thickness samples)
     P_sp: float         # spallation surface production rate (P_ref × SF × shield, no tc)
     P_mu: float         # muon surface production rate
@@ -271,13 +275,26 @@ class ProductionRateWorkflow:
             computing exposure ages directly from the CSV.
 
         Multiple rows sharing the same sample name are treated as one sample
-        with multiple nuclide measurements (dual-nuclide samples).
+        with multiple nuclide measurements (dual-nuclide samples).  Location
+        and geometry are taken from the first matching row; the location columns
+        of subsequent rows with the same name are ignored.
 
         Parameters
         ----------
+        path : str
+            Path to the CSV file.
         use_centroid : bool
             If True, compute one production rate at the geographic centroid
-            of all points.  Default False: compute per point.
+            of all points.  Default False: compute per point (recommended when
+            samples span different elevations or latitudes).
+        **kwargs
+            Extra keyword arguments passed to TargetSite when use_centroid=True
+            (e.g. thick, rho, shield, erosion, yr).
+
+        Returns
+        -------
+        ProductionRateWorkflow instance.  If the CSV has nuclide columns,
+        self._v3_text is populated and date_all() is available.
         """
         import csv as csv_mod
         rows = []
@@ -376,7 +393,22 @@ class ProductionRateWorkflow:
 
     @staticmethod
     def _current_rc_s(t: TargetSite) -> tuple:
-        """Current-epoch cutoff rigidity and solar modulation at site."""
+        """
+        Current-epoch geomagnetic cutoff rigidity and solar modulation at site.
+
+        Uses a 50-yr exposure window to capture only the most recent
+        paleomagnetic time step; returns the first (newest) values.
+
+        Parameters
+        ----------
+        t : TargetSite
+
+        Returns
+        -------
+        (Rc, S) : tuple of float
+            Rc — cutoff rigidity in GV
+            S  — solar modulation parameter in sfu
+        """
         sfdata = get_DipRc({
             "lat":  np.array([t.lat]),
             "long": np.array([t.lon]),
@@ -403,6 +435,18 @@ class ProductionRateWorkflow:
         """
         Load calibration data from a v3-format text string instead of fetching
         from ICE-D.  Useful when working offline or with custom datasets.
+
+        Parameters
+        ----------
+        v3_text : str
+            v3-format text block containing sample, nuclide, and true_t lines.
+        max_dist_km : float
+            Discard calibration samples farther than this distance from the
+            target (default: accept all).
+
+        Returns
+        -------
+        self — for method chaining.
         """
         all_samples = _parse_iced_into_samples(v3_text)
         t = self.target
@@ -770,8 +814,20 @@ class ProductionRateWorkflow:
         global-default and locally calibrated ages are printed side by side so
         the effect of the local production rate is immediately visible.
 
-        Returns the locally calibrated get_ages() result when use_local=True
-        and local data exist, otherwise the global-default result.
+        Parameters
+        ----------
+        use_local : bool
+            If True (default) and a local calibration exists, the comparison
+            table is shown and the local result is returned.  If False, or if
+            no local calibration is available, only the global-default ages
+            are printed and that result is returned.
+        result_type : str
+            'long' for all three scaling schemes (default); 'short' for St only.
+
+        Returns
+        -------
+        dict — get_ages() result dict (local calibration if available and
+        use_local=True, otherwise global default).
         """
         if not self._v3_text:
             raise ValueError(

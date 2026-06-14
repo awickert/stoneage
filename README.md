@@ -184,7 +184,7 @@ Implied reference production rates (SLHL):
   LSDn : 0.4429          (global default: 0.849, dimensionless)
 ```
 
-> **Note on LSDn units.** St and Lm report dimensional production rates in atoms g⁻¹ yr⁻¹. LSDn reports a dimensionless correction factor (global calibration ≈ 0.849 for Be-10 in quartz). Ratios of the returned value to the global default indicate how your site compares to the global calibration dataset.
+> **Note on LSDn.** All three schemes report production rates in at g⁻¹ yr⁻¹. The LSDn P_ref (≈ 0.849 for Be-10 in quartz) is in grid-internal units; it is multiplied by the LSDn neutron-flux scaling factor (≈ 4.7 at SLHL) to give at g⁻¹ yr⁻¹, consistent with St and Lm. The `ProductionRateWorkflow` uses the proper LSDn and Lm grid scaling factors — not the Stone2000 approximation — so all reported P_sp values are in at g⁻¹ yr⁻¹. The `calc_P_LSDn` output of `get_ages()` in calibration mode retains the original dimensionless convention of the v3 MATLAB code.
 
 For a real calibration dataset with multiple samples, take the error-weighted mean of `calc_P_St` (or `_Lm`, `_LSDn`) across samples, weighted by `calc_delP_St`.
 
@@ -210,59 +210,106 @@ print(f"Max P_St: {n['calc_maxP_St'][0]:.4f} at/g/yr")
 
 `ProductionRateWorkflow` provides a transparent, step-by-step path from
 sample location to local production rate and (optionally) exposure age.
-It is designed so that each step is explicit and auditable, not hidden
-inside a black box.
+Each step is explicit and auditable — nothing is hidden inside a black box.
 
-### Single location
+### Quick start
 
 ```python
 from stoneage.workflow import ProductionRateWorkflow
 
-wf = ProductionRateWorkflow(lat=46.2, lon=-91.8, elv=183,
-                             name="BoisBrule-headwaters")
-wf.find_calibration_data(max_dist_km=500)  # fetches ICE-D automatically
-wf.calibrate()   # computes global default AND locally calibrated P_ref
-wf.report()      # prints transparent production rate summary
+# From a CSV (see CSV input formats below)
+wf = ProductionRateWorkflow.from_csv("samples.csv")
+wf.find_calibration_data()        # fetch nearby ICE-D calibration sites
+wf.calibrate()                    # derive P_ref; compute P_sp, P_mu per target
+wf.report()                       # transparent production rate summary
+wf.date_all()                     # exposure ages, global vs. local comparison
+wf.production_timeseries(t_ka=14) # P_sp(t) for Lm and LSDn over 14 ka
 ```
 
-Or with calibration data supplied directly (offline / custom dataset):
+Or construct from a single location directly:
 
 ```python
-wf.load_calibration_text(v3_text_block)
+wf = ProductionRateWorkflow(lat=46.2, lon=-91.8, elv=183,
+                             thick=2.0, rho=2.65, shield=1.0,
+                             name="BoisBrule")
+```
+
+---
+
+### CSV input formats
+
+`from_csv()` accepts two formats, detected automatically from column names.
+
+#### Location-only CSV
+
+Use when samples have not yet been measured, or when only production
+rates are needed:
+
+```
+name, lat, lon, elevation[, elv_flag, thickness, density, shielding, erosion, year]
+```
+
+```python
+wf = ProductionRateWorkflow.from_csv("sites.csv")
 wf.calibrate()
 wf.report()
 ```
 
-### Multiple sample locations from a CSV
+#### Full v3-field CSV
 
-The CSV must have columns `name, lat, lon, elevation`
-(optional: `thickness, density, shielding, erosion, year`).
+Use when samples are measured and you want production rates **and** exposure
+ages from the same file:
+
+```
+name, lat, lon, elevation, elv_flag, thickness, density, shielding, erosion, year,
+nuclide, mineral, concentration, uncertainty, standard[, standard_value]
+```
+
+- `elv_flag`: `std` (ERA-40), `ant` (Antarctic), or `pre` (pressure in hPa)
+- `nuclide`: `Be-10`, `Al-26`, `He-3`, `Ne-21`, or `C-14`
+- `standard`: e.g. `07KNSTD`, `KNSTD`, `CRONUS-P`, `NONE`
+- `standard_value`: measured standard concentration — required for He-3 and Ne-21 only
+
+Multiple rows with the same `name` are treated as one sample with multiple
+nuclide measurements (dual-nuclide samples).
 
 ```python
-wf = ProductionRateWorkflow.from_csv("samples.csv")
+wf = ProductionRateWorkflow.from_csv("samples_with_measurements.csv")
+wf.find_calibration_data()
+wf.calibrate()
+wf.report()
+wf.date_all()   # dates every sample in the CSV
+```
+
+To convert a full v3-field CSV to a v3 text block directly:
+
+```python
+from stoneage import csv_to_v3
+print(csv_to_v3("samples_with_measurements.csv"))
 ```
 
 By default, a production rate is computed **per point** — essential when
-samples span different elevations or latitudes, since
-P_local = P_ref × SF(lat, pressure) varies significantly between them.
-Pass `use_centroid=True` for a single rate at the group centroid instead.
+samples span different elevations or latitudes.  Pass `use_centroid=True`
+for a single combined rate at the geographic centroid instead:
 
 ```python
 wf = ProductionRateWorkflow.from_csv("samples.csv", use_centroid=True)
 ```
 
-### Optional dating step
+---
+
+### Calibration from ICE-D
 
 ```python
-wf.date("SITE  Be-10  quartz  60000  1800  07KNSTD;")
+wf.find_calibration_data(dataset_id=20, max_dist_km=1000)
 ```
 
-Uses the locally calibrated production rate when one is available,
-falling back to the global default otherwise.
+Downloads the requested calibration dataset from ICE-D, ranks samples by
+distance from the target centroid, and prints the nearest sites.  The
+closest calibration data is then used by `calibrate()` to derive a local
+P_ref alongside the global default.
 
-### ICE-D dataset IDs
-
-`find_calibration_data(dataset_id=N)` accepts any of these:
+`dataset_id` options:
 
 | ID | Dataset |
 |----|---------|
@@ -271,6 +318,101 @@ falling back to the global default otherwise.
 |  3 | Balco — NE North America 2009 |
 |  2 | Stroeven — Scandinavia 2015 |
 |  1 | Young — Baffin Bay 2013 |
+
+For offline use, supply calibration data directly as a v3 text block:
+
+```python
+wf.load_calibration_text(v3_text_block)
+```
+
+---
+
+### report() — production rate breakdown
+
+`report()` prints a full breakdown of production rate components per
+scaling scheme and per target site:
+
+```
+  Scheme       SF        P_sp      P_mu      tc     P_total         ±  Unit
+  ────────────────────────────────────────────────────────────────────────
+  St       0.9432      3.7767    0.0734  0.9796      3.7729    0.2923  at/g/yr
+  Lm       1.0109      4.1686    0.0734  0.9796      4.1568    0.3063  at/g/yr
+  LSDn     4.7002      3.9106    0.0734  0.9796      3.9041    0.2260  at/g/yr
+```
+
+- **SF** — scaling factor (Stone2000 for St; Lm/LSDn grid values for Lm/LSDn)
+- **P_sp** — spallation surface production rate, no thickness averaging (at/g/yr).
+  This is the value to use as the surface boundary condition for depth profiles.
+- **P_mu** — muon surface production rate (at/g/yr)
+- **tc** — thickness correction factor (< 1 for finite-thickness samples)
+- **P_total** — effective rate for the surface sample: P_sp × tc + P_mu
+- **Λsp** — spallation attenuation length (160.0 g/cm²), printed above the table
+
+All three schemes now give at/g/yr.  St uses the Stone2000 polynomial (time-
+independent); Lm and LSDn use their respective grids interpolated at the
+current-epoch cutoff rigidity and, for LSDn, the current solar modulation
+parameter.
+
+The report also prints a global vs. local comparison when both are available,
+and the corrections checklist.
+
+---
+
+### date_all() — exposure ages from CSV
+
+When the workflow was loaded from a full v3-field CSV, `date_all()` dates
+every sample and prints a global vs. local comparison:
+
+```
+  Exposure ages — global default vs. ICE-D local (75 samples, max 1488 km):
+  Sample            Nuclide         Scheme   Global (yr)   Local (yr)        Shift
+  ────────────────────────────────────────────────────────────────────────────────
+  NEW-A             N10quartz       St            11,565       11,454    -112 (-1.0%)
+  NEW-A             N10quartz       Lm            11,268       11,475    +207 (+1.8%)
+  NEW-A             N10quartz       LSDn          11,137       11,574    +436 (+3.9%)
+```
+
+The locally calibrated result is returned as a dict (same structure as
+`get_ages()`) so it can be used programmatically.
+
+For single-sample or manually specified nuclide data:
+
+```python
+wf.date("SITE  Be-10  quartz  60000  1800  07KNSTD;")
+```
+
+---
+
+### production_timeseries() — time-varying production rates
+
+Lm and LSDn are time-dependent: the geomagnetic cutoff rigidity Rc(t)
+varies, changing the cosmic-ray flux reaching the surface.
+`production_timeseries()` computes P_sp(t) at each paleomagnetic time step:
+
+```python
+ts = wf.production_timeseries(t_ka=14.0)  # 14 ka of record
+```
+
+Returns a dict with keys `t_ka`, `dt_ka`, `Rc`, `S`, `St`, `Lm`, `LSDn`,
+`P_mu`, and `target`.  Also prints a table:
+
+```
+   Time (ka)   Rc (GV)         St         Lm       LSDn  at/g/yr
+  ────────────────────────────────────────────────────────────────
+       0.003    2.3905     3.7767     4.1686     3.9106
+       0.160    2.4793     3.7767     4.1717     4.2010
+       0.260    3.2032     3.7767     4.1189     4.3564
+       ...
+       0.960   10.3327     3.7767     3.3184     2.6305
+```
+
+St is constant (time-independent).  Lm and LSDn vary — by ±15% and ±25%
+respectively at mid-latitude sites over the Holocene, driven by changes in
+the geomagnetic field.
+
+This output is the surface boundary condition for depth-profile forward
+models: use `ts["LSDn"]` and `ts["dt_ka"]` to compute the time-averaged
+production rate for a sample of estimated age T, then iterate to convergence.
 
 ---
 

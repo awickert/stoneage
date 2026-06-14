@@ -15,17 +15,31 @@ def thickness(zmax, L, rho):
     """
     Thickness correction for spallogenic cosmogenic-nuclide production.
 
+    Integrates the exponential production-depth profile over the sample
+    thickness, normalising to the surface production rate:
+
+        tc = (L / (rho × zmax)) × (1 − exp(−rho × zmax / L))
+
     Port of thickness.m (Balco).
 
     Parameters
     ----------
-    zmax : array-like, sample thickness (cm)
-    L    : array-like, effective attenuation length (g/cm^2)
-    rho  : array-like, bulk density (g/cm^3)
+    zmax : array-like
+        Sample thickness in cm.  Pass 0 to get tc = 1.0 (no correction).
+    L    : array-like
+        Effective spallogenic attenuation length in g/cm².
+        Use Lsp() = 160 g/cm² for the standard value.
+    rho  : array-like
+        Bulk rock density in g/cm³.
+
+    All three arguments are broadcast to a common shape.
 
     Returns
     -------
-    correction : ndarray, dimensionless (1.0 for zero-thickness sample)
+    correction : ndarray, dimensionless, in (0, 1].
+        Multiply the surface spallogenic production rate by this factor to
+        obtain the production rate averaged over the sample thickness.
+        A 2-cm sample at rho=2.65 gives tc ≈ 0.98.
     """
     zmax = np.atleast_1d(np.asarray(zmax, dtype=float))
     L    = np.atleast_1d(np.asarray(L,    dtype=float))
