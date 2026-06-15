@@ -4,8 +4,28 @@ Port of validate_v3_input.m by Greg Balco (BGC).
 
 Input format described at:
   https://hess.ess.washington.edu/math/docs/v3/v3_input_explained.html
+
+³⁶Cl extension
+--------------
+parse_v3_input() accepts an optional ``chem_text`` argument: a CSV string
+(or file content) with one row per sample containing full bulk geochemistry.
+
+Required geochemistry columns:
+    sample_name, SiO2, Al2O3, Fe2O3, MgO, CaO, Na2O, K2O, TiO2, P2O5,
+    MnO, Cr2O3, LOI, Cl_ppm
+
+Optional geochemistry columns (default 0 if absent):
+    B_ppm, Gd_ppm, Sm_ppm
+
+³⁶Cl nuclide line format (no mineral field — Cl is whole-rock):
+    sample_name  Cl-36  <N36 atoms/g>  <delN36>  <std_name>
+
+Supported ³⁶Cl standards: KNSTD (cf=1.0), 0 (invalid, cf=0).
+Additional standards can be added to Constants.cl36_stds_names/cfs.
 """
 
+import csv
+import io
 import re
 import datetime
 import numpy as np
@@ -15,7 +35,7 @@ from .constants import make_consts
 _NUCLIDE_TOKENS = {"Be-10", "Al-26", "Ne-21", "He-3", "C-14", "Cl-36"}
 
 
-def parse_v3_input(text_block: str, consts=None) -> dict:
+def parse_v3_input(text_block: str, consts=None, chem_text: str | None = None) -> dict:
     """
     Parse and validate a v3-format input text block.
 
@@ -24,11 +44,20 @@ def parse_v3_input(text_block: str, consts=None) -> dict:
     text_block : str
         Semicolon-delimited block of sample, nuclide, and optional age lines.
     consts : Constants, optional
+    chem_text : str, optional
+        CSV text (header + data rows) with bulk geochemistry for ³⁶Cl samples.
+        Joined to the sample table on ``sample_name``.  Required when any
+        nuclide line references ``Cl-36``; ignored otherwise.
 
     Returns
     -------
-    dict with keys ``s`` (samples), ``n`` (nuclide measurements),
-    and optionally ``c`` (calibration ages).
+    dict with keys:
+        ``s``    : sample metadata
+        ``n``    : nuclide measurements (excludes ³⁶Cl rows)
+        ``cl36`` : ³⁶Cl measurements dict (present only if Cl-36 lines exist)
+        ``chem`` : bulk geochemistry dict keyed by sample_name (present only
+                   if chem_text was supplied)
+        ``c``    : calibration ages (optional)
     Raises ValueError on malformed input.
     """
     if consts is None:
@@ -241,7 +270,21 @@ def parse_v3_input(text_block: str, consts=None) -> dict:
             n["nuclide"].append(f"N14{mineral}")
 
         elif nuclide_id == "Cl-36":
-            raise ValueError(f"Cl-36 not yet supported (line {li}).")
+            if len(parts) != 5:
+                raise ValueError(
+                    f"Cl-36 line {li}: expected 5 fields "
+                    f"(name Cl-36 N delN std), got {len(parts)}."
+                )
+            N_raw    = _to_float(parts[2], "Cl-36 concentration", li)
+            delN_raw = _to_float(parts[3], "Cl-36 uncertainty", li)
+            std_name = parts[4]
+            cf = _get_cf(
+                std_name, consts.cl36_stds_names, consts.cl36_stds_cfs,
+                "Cl-36", li,
+            )
+            n["N"][a]    = N_raw * cf
+            n["delN"][a] = delN_raw * cf
+            n["nuclide"].append("N36")
         else:
             raise ValueError(f"Unrecognized nuclide '{nuclide_id}' on line {li}.")
 
@@ -251,6 +294,29 @@ def parse_v3_input(text_block: str, consts=None) -> dict:
             raise ValueError(f"Sample '{s['sample_name'][a]}' has no nuclide measurements.")
 
     out = {"s": s, "n": n}
+
+    # ---- Geochemistry table (³⁶Cl) ----
+    cl36_present = "N36" in n["nuclide"]
+    if chem_text is not None:
+        out["chem"] = _parse_chem(chem_text, s["sample_name"])
+    elif cl36_present:
+        raise ValueError(
+            "Cl-36 measurements are present but no geochemistry was supplied. "
+            "Pass chem_text= to parse_v3_input()."
+        )
+
+    # ---- Validate geochemistry coverage for Cl-36 samples ----
+    if cl36_present and "chem" in out:
+        missing = [
+            s["sample_name"][n["index"][b]]
+            for b, nuc in enumerate(n["nuclide"])
+            if nuc == "N36"
+            and s["sample_name"][n["index"][b]] not in out["chem"]
+        ]
+        if missing:
+            raise ValueError(
+                f"Cl-36 samples missing from geochemistry CSV: {missing}"
+            )
 
     # ---- Parse calibration age lines ----
     if t_lines:
@@ -303,6 +369,52 @@ def parse_v3_input(text_block: str, consts=None) -> dict:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+_CHEM_OXIDES = [
+    "SiO2", "Al2O3", "Fe2O3", "MgO", "CaO", "Na2O",
+    "K2O", "TiO2", "P2O5", "MnO", "Cr2O3", "LOI",
+]
+_CHEM_TRACES = ["Cl_ppm", "B_ppm", "Gd_ppm", "Sm_ppm"]
+_CHEM_REQUIRED = _CHEM_OXIDES + ["Cl_ppm"]
+
+
+def _parse_chem(chem_text: str, sample_names: list) -> dict:
+    """
+    Parse geochemistry CSV text into a dict keyed by sample_name.
+
+    Each value is a dict with oxide wt% keys and trace-element ppm keys.
+    Missing optional columns (B_ppm, Gd_ppm, Sm_ppm) default to 0.
+    """
+    reader = csv.DictReader(io.StringIO(chem_text.strip()))
+    if reader.fieldnames is None:
+        raise ValueError("Geochemistry CSV appears empty.")
+
+    # Strip BOM / whitespace from field names
+    fieldnames = [f.strip().lstrip("﻿") for f in reader.fieldnames]
+    reader.fieldnames = fieldnames
+
+    if "sample_name" not in fieldnames:
+        raise ValueError(
+            "Geochemistry CSV must have a 'sample_name' column."
+        )
+    missing_required = [c for c in _CHEM_REQUIRED if c not in fieldnames]
+    if missing_required:
+        raise ValueError(
+            f"Geochemistry CSV missing required columns: {missing_required}"
+        )
+
+    chem = {}
+    for row in reader:
+        name = row["sample_name"].strip()
+        entry: dict = {}
+        for col in _CHEM_OXIDES:
+            entry[col] = float(row.get(col, 0.0) or 0.0)
+        for col in _CHEM_TRACES:
+            entry[col] = float(row.get(col, 0.0) or 0.0)
+        chem[name] = entry
+
+    return chem
+
 
 def _check_name(name, line_no):
     if len(name) > 32:
@@ -437,10 +549,13 @@ def csv_to_v3(path: str) -> str:
                 lines.append(f"{name} {nuclide} {mineral} {conc} {uncert} {std} {std_val};")
             elif nuclide == "C-14":
                 lines.append(f"{name} {nuclide} {mineral} {conc} {uncert};")
+            elif nuclide == "Cl-36":
+                # No mineral field for whole-rock Cl-36
+                lines.append(f"{name} {nuclide} {conc} {uncert} {std};")
             else:
                 raise ValueError(
                     f"Unrecognized nuclide '{nuclide}' for sample '{name}'. "
-                    f"Expected one of: Be-10, Al-26, He-3, Ne-21, C-14."
+                    f"Expected one of: Be-10, Al-26, He-3, Ne-21, C-14, Cl-36."
                 )
 
     return "\n".join(lines)

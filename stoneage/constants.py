@@ -70,12 +70,27 @@ class Constants:
     ok_mins_21: List[str] = field(default_factory=lambda: ["quartz"])
     ok_mins_14: List[str] = field(default_factory=lambda: ["quartz"])
 
+    # ---- Cl-36 AMS standards ----
+    # Correction factors normalise measured ³⁶Cl/Cl ratios to a common scale.
+    # "KNSTD" (ratio = 1.0) means the user has already corrected to absolute
+    # atoms/g; "0" means the measurement was flagged as invalid.
+    cl36_stds_names: List[str] = field(default_factory=lambda: [
+        "KNSTD", "0",
+    ])
+    cl36_stds_cfs: np.ndarray = field(default_factory=lambda: np.array([
+        1.0, 0.0,
+    ]))
+
     default_yr: int = 2010
 
     # ---- Decay constants ----
     # Be-10: Chmeleff/Korschinek half-life 1.387 Ma
     l10:    float = field(default_factory=lambda: np.log(2) / 1.387e6)
     dell10: float = field(default_factory=lambda: (np.log(2) / 1.387e6**2) * 0.012e6)
+
+    # Cl-36: Holden & Hoffman (2000) half-life 301 ka
+    l36:    float = field(default_factory=lambda: np.log(2) / 301e3)
+    dell36: float = field(default_factory=lambda: np.log(2) / 301e3 * 0.003)
 
     # Al-26: Nishiizumi (2004) value
     l26:    float = 9.83e-7

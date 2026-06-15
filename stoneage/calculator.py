@@ -11,6 +11,122 @@ from .atmosphere import ERA40atm, antatm
 from .scaling import stone2000, get_LmSF, get_LSDnSF
 from .corrections import thickness, Lsp
 from .cutoff_rigidity import get_DipRc
+from .cl36_production import cl36_production
+
+
+def _split_cl36(n: dict, cl36_positions: list) -> tuple[dict, dict]:
+    """
+    Remove N36 entries from *n* and return (trimmed_n, cl36_dict).
+
+    cl36_dict has the same structure as *n* but contains only Cl-36 rows.
+    The original positions in the combined array are preserved in
+    cl36_dict["orig_positions"] for diagnostics.
+    """
+    keep = [b for b in range(len(n["nuclide"])) if n["nuclide"][b] != "N36"]
+
+    cl36: dict = {"orig_positions": cl36_positions}
+    main: dict = {}
+    for k, v in n.items():
+        if isinstance(v, np.ndarray) and len(v) == len(n["nuclide"]):
+            cl36[k] = v[cl36_positions]
+            main[k] = v[keep]
+        elif isinstance(v, list) and len(v) == len(n["nuclide"]):
+            cl36[k] = [v[b] for b in cl36_positions]
+            main[k] = [v[b] for b in keep]
+        else:
+            main[k] = v  # scalar / meta fields stay in main
+
+    return main, cl36
+
+
+def _cl36_ages_St(
+    in_data: dict,
+    cl36_raw: dict,
+    s: dict,
+    consts: Constants,
+    cal: int,
+) -> None:
+    """
+    Compute Stone-2000 ³⁶Cl exposure ages and store in in_data["cl36"].
+
+    Results dict keys
+    -----------------
+    sample_name, index, N, delN         — measurement metadata
+    pressure, SF_sp, SF_mu, SF_thick    — site scalars
+    prod                                — Cl36Production per measurement
+    P_total                             — total production rate (at/g/yr)
+    t_St                                — exposure age (yr)
+    delt_int_St, delt_ext_St            — 1σ uncertainties (yr)
+    """
+    if "chem" not in in_data:
+        raise ValueError(
+            "Cl-36 measurements found but no geochemistry in in_data. "
+            "Supply chem_text= to parse_v3_input()."
+        )
+
+    lsp_val  = Lsp()
+    LAMBDA   = consts.l36
+    DELP_FRAC = consts.dell36 / LAMBDA   # relative λ uncertainty ≈ 0.003
+    # Production rate relative uncertainty dominated by P_Ca
+    # (≈ 3.5 %; λ uncertainty is negligible by comparison)
+    DELP_REL  = 0.035
+
+    results: dict = {
+        "sample_name": cl36_raw["sample_name"],
+        "index":       cl36_raw["index"],
+        "N":           cl36_raw["N"],
+        "delN":        cl36_raw["delN"],
+        "prod":        [],
+        "P_total":     np.zeros(len(cl36_raw["index"])),
+        "t_St":        np.zeros(len(cl36_raw["index"])),
+        "delt_int_St": np.zeros(len(cl36_raw["index"])),
+        "delt_ext_St": np.zeros(len(cl36_raw["index"])),
+    }
+
+    pressure = in_data["s"]["pressure"]
+
+    for b, si in enumerate(cl36_raw["index"]):
+        sname = s["sample_name"][si]
+        chem  = in_data["chem"].get(sname, {})
+
+        P_hPa   = pressure[si]
+        SF_sp   = stone2000(s["lat"][si], P_hPa, Fsp=1.0)[0]
+        SF_mu   = stone2000(s["lat"][si], P_hPa, Fsp=0.0)[0]
+        SF_thick = thickness(s["thick"][si], lsp_val, s["rho"][si])[0]
+        othercorr = s["othercorr"][si]
+
+        prod = cl36_production(
+            chem, SF_sp * othercorr, SF_mu * othercorr, SF_thick,
+        )
+        results["prod"].append(prod)
+
+        P   = prod.P_total
+        N   = cl36_raw["N"][b]
+        dN  = cl36_raw["delN"][b]
+
+        results["P_total"][b] = P
+
+        if N <= 0.0 or P <= 0.0:
+            continue
+
+        sat = P / LAMBDA
+        if N >= sat:
+            in_data["flags"].append(
+                f"Sample {sname} — Cl-36 appears saturated (St)."
+            )
+            results["t_St"][b] = 0.0
+            continue
+
+        t = -np.log(1.0 - N * LAMBDA / P) / LAMBDA
+        denom    = P - N * LAMBDA
+        delt_int = dN / denom
+        delt_ext = np.sqrt(delt_int**2 + (N / (P * denom) * P * DELP_REL)**2)
+
+        results["t_St"][b]        = t
+        results["delt_int_St"][b] = delt_int
+        results["delt_ext_St"][b] = delt_ext
+
+    in_data["cl36"] = results
 
 
 def get_ages(in_data: dict, control: dict = None, consts: Constants = None) -> dict:
@@ -49,6 +165,14 @@ def get_ages(in_data: dict, control: dict = None, consts: Constants = None) -> d
     s = in_data["s"]
     n = in_data["n"]
 
+    # ── Split out Cl-36 measurements before the main loop ────────────────────
+    # They use a different production pathway and are handled separately.
+    # All existing code below operates only on non-Cl-36 nuclides.
+    cl36_positions = [b for b, nuc in enumerate(n["nuclide"]) if nuc == "N36"]
+    if cl36_positions:
+        n, cl36_raw = _split_cl36(n, cl36_positions)
+        in_data["n"] = n
+
     num_n = len(n["index"])
 
     # -----------------------------------------------------------------------
@@ -74,7 +198,7 @@ def get_ages(in_data: dict, control: dict = None, consts: Constants = None) -> d
     # -----------------------------------------------------------------------
     # 2. Nuclide-index mapping into consts arrays
     # -----------------------------------------------------------------------
-    nindex = np.array([consts.nuclides.index(nuc) for nuc in n["nuclide"]])
+    nindex = np.array([consts.nuclides.index(nuc) for nuc in n["nuclide"]], dtype=int)
     n["nindex"] = nindex
 
     ni = n["index"]  # sample index for each nuclide measurement (0-based)
@@ -454,5 +578,9 @@ def get_ages(in_data: dict, control: dict = None, consts: Constants = None) -> d
             n[f"calc_delP_{sf}"]    = calc_delP
             n[f"calc_delmaxP_{sf}"] = calc_delmaxP
             n[f"calc_delminP_{sf}"] = calc_delminP
+
+    # ── Cl-36 exposure ages (Stone-2000 / St scaling; v1) ────────────────────
+    if cl36_positions:
+        _cl36_ages_St(in_data, cl36_raw, s, consts, cal)
 
     return in_data
